@@ -49,6 +49,13 @@ func (r responsesRequest) openAI() (oaiReq, error) {
 			}
 			typ, _ := m["type"].(string)
 			switch typ {
+			case "compaction":
+				encrypted, _ := m["encrypted_content"].(string)
+				summary, err := decodeCompactionSummary(encrypted)
+				if err != nil {
+					return o, fmt.Errorf("invalid compaction item: %w", err)
+				}
+				o.Messages = append(o.Messages, oaiMsg{Role: "system", Content: "Compacted conversation context:\n" + summary})
 			case "function_call_progress":
 				// Progress is deliberately not converted into an assistant/tool
 				// message. It is transport metadata from a long-running client-side

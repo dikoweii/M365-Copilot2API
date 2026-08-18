@@ -22,10 +22,21 @@ import (
 
 const (
 	designerAppServiceScope  = "https://designerappservice.officeapps.live.com/.default"
+	imageModelGPTImage2      = "gpt-image-2"
 	maxGeneratedImageBytes   = 20 << 20
 	maxImageEditRequestBytes = maxGeneratedImageBytes + (2 << 20)
 	generatedImageTTL        = 15 * time.Minute
 	maxGeneratedImages       = 128
+	imageBusyRetryAfter      = 60
+	imageQuotaRetryAfter     = 86400
+)
+
+type imageFailureKind uint8
+
+const (
+	imageFailureNone imageFailureKind = iota
+	imageFailureQuota
+	imageFailureBusy
 )
 
 type generatedImage struct {
@@ -57,6 +68,12 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"prompt is required","type":"invalid_request_error"}}`, 400)
 		return
 	}
+	model, ok := normalizeImageModel(b.Model)
+	if !ok {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", `model must be empty, "auto", or "gpt-image-2"`)
+		return
+	}
+	b.Model = model
 	if b.N <= 0 {
 		b.N = 1
 	}
@@ -100,28 +117,63 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		endpoint = "/v1/images/edits"
 		prompt = fmt.Sprintf("Edit the first attached image with GPT Image 2. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
 	}
-	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments})
+	chatRequest := chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments}
+	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chatRequest)
+	// A fresh image request is safe to retry on another account when the
+	// account was selected automatically. Keep explicit account selection
+	// pinned so callers can diagnose that account on its own.
+	autoAccount := strings.TrimSpace(b.AccountID) == "" && strings.TrimSpace(b.User) == ""
+	if err != nil && autoAccount && (IsRateLimited(err) || IsAuthFailure(err) || IsEmptyCompletion(err)) {
+		if next, nextErr := s.nextHealthyAccount(acc.ID); nextErr == nil {
+			res2, err2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chatRequest)
+			if err2 == nil {
+				s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+				acc = next
+				res = res2
+				err = nil
+			} else {
+				err = err2
+			}
+		}
+	}
 	if err != nil {
 		writeUpstreamError(w, err)
 		return
 	}
 	log.Printf("[image-gen] conversation=%s images=%d text_len=%d events=%d raw_len=%d", res.ConversationID, len(res.Images), len(res.Text), len(res.Events), len(res.RawResult))
-	if len(res.Images) == 0 {
-		if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
-			res.Images = urls
-		}
-	}
-	if len(res.Images) == 0 {
-		if urls := extractImageURLs(res.Text); len(urls) > 0 {
-			res.Images = urls
-		}
-	}
+	populateImageURLs(&res)
 	if len(res.Images) == 0 {
 		refusalText := strings.Join([]string{res.Text, res.RawResult}, "\n")
-		if isImageQuotaRefusal(refusalText) {
-			w.Header().Set("Retry-After", "86400")
-			writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "M365 image generation quota is exhausted; try again later or use another account")
-			return
+		failureKind := classifyImageFailure(refusalText)
+		if autoAccount && failureKind != imageFailureNone {
+			retryAfter := imageBusyRetryAfter
+			if failureKind == imageFailureQuota {
+				retryAfter = imageQuotaRetryAfter
+			}
+			failureErr := &UpstreamHTTPError{Status: http.StatusTooManyRequests, RetryAfter: retryAfter, Body: refusalText}
+			s.accountPool.MarkFailure(acc.ID, failureErr, rateLimitCooldown)
+			if next, nextErr := s.nextHealthyAccount(acc.ID); nextErr == nil {
+				res2, err2 := s.chatWithAccount(ctx, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chatRequest)
+				if err2 == nil {
+					populateImageURLs(&res2)
+					if len(res2.Images) > 0 {
+						acc = next
+						res = res2
+					}
+				}
+			}
+		}
+		if len(res.Images) == 0 {
+			switch failureKind = classifyImageFailure(strings.Join([]string{res.Text, res.RawResult}, "\n")); failureKind {
+			case imageFailureQuota:
+				w.Header().Set("Retry-After", fmt.Sprint(imageQuotaRetryAfter))
+				writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "M365 image generation quota is exhausted; try again later or use another account")
+				return
+			case imageFailureBusy:
+				w.Header().Set("Retry-After", fmt.Sprint(imageBusyRetryAfter))
+				writeOpenAIError(w, http.StatusTooManyRequests, "rate_limit_error", "M365 image generation service is busy; retry later or use another account")
+				return
+			}
 		}
 		textPreview := res.Text
 		if len(textPreview) > 500 {
@@ -194,13 +246,35 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		Time:         time.Now(),
 		APIKeyPrefix: extractAPIKey(r),
 		AccountEmail: acc.Email,
-		Model:        firstNonEmpty(b.Model, "gpt-image-2"),
+		Model:        b.Model,
 		Endpoint:     endpoint,
 		InputTokens:  EstimateTokens(prompt),
 		DurationMs:   time.Since(startedAt).Milliseconds(),
 		Status:       200,
 	})
 	jsonOut(w, map[string]any{"created": time.Now().Unix(), "data": data, "m365": map[string]any{"conversationId": res.ConversationID, "sessionId": res.SessionID, "images": images}})
+}
+
+func normalizeImageModel(raw string) (string, bool) {
+	switch strings.TrimSpace(raw) {
+	case "", "auto", imageModelGPTImage2:
+		return imageModelGPTImage2, true
+	default:
+		return "", false
+	}
+}
+
+func populateImageURLs(res *chathub.Result) {
+	if res == nil || len(res.Images) > 0 {
+		return
+	}
+	if urls := extractImageURLs(res.RawResult); len(urls) > 0 {
+		res.Images = urls
+		return
+	}
+	if urls := extractImageURLs(res.Text); len(urls) > 0 {
+		res.Images = urls
+	}
 }
 
 func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +517,34 @@ func isImageQuotaRefusal(text string) bool {
 		}
 	}
 	return false
+}
+
+func classifyImageFailure(text string) imageFailureKind {
+	if isImageQuotaRefusal(text) {
+		return imageFailureQuota
+	}
+	low := strings.ToLower(strings.TrimSpace(text))
+	for _, phrase := range []string{
+		"unusually high demand",
+		"experiencing high demand",
+		"high demand",
+		"image generation service is busy",
+		"image generation service is temporarily unavailable",
+		"temporarily unavailable",
+		"could not be completed at this time",
+		"please try again later",
+		"try again later",
+		"try again shortly",
+		"需求过高",
+		"服务繁忙",
+		"暂时不可用",
+		"请稍后再试",
+	} {
+		if strings.Contains(low, phrase) {
+			return imageFailureBusy
+		}
+	}
+	return imageFailureNone
 }
 
 // extractImageURLs finds image URLs in a raw JSON string by searching for URL patterns.

@@ -170,21 +170,26 @@ func (s *apiKeyStore) update(id, name string, revoked *bool) (bool, error) {
 	}
 	return true, nil
 }
-func (s *apiKeyStore) valid(raw string) bool {
+func (s *apiKeyStore) authenticate(raw string) (string, bool) {
 	s.mu.Lock()
 	h := keyHash(raw)
-	found := false
+	id := ""
 	for i := range s.Keys {
 		if s.Keys[i].Hash == h && !s.Keys[i].Revoked {
 			now := time.Now()
 			s.Keys[i].LastUsedAt = &now
-			found = true
+			id = s.Keys[i].ID
 			break
 		}
 	}
 	s.mu.Unlock()
-	if found {
+	if id != "" {
 		s.persist.markDirty()
 	}
-	return found
+	return id, id != ""
+}
+
+func (s *apiKeyStore) valid(raw string) bool {
+	_, ok := s.authenticate(raw)
+	return ok
 }

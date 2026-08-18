@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ToolProvider is the interface for discovering and invoking tools.
@@ -16,13 +19,22 @@ type ToolProvider interface {
 	CallTool(ctx context.Context, name string, arguments map[string]any) (CallResult, error)
 }
 
-// GlobalToolRegistry holds the globally registered tools that are available
-// to all MCP sessions, not just the session that created them.
+// GlobalToolRegistry keeps legacy global tools and request-scoped tool sets.
+// Client-provided tools must use a scope so concurrent tenants cannot discover
+// each other's function schemas.
 var GlobalToolRegistry = &toolRegistry{tools: []Tool{}}
 
+const scopedToolTTL = 5 * time.Minute
+
+type scopedToolSet struct {
+	tools     []Tool
+	expiresAt time.Time
+}
+
 type toolRegistry struct {
-	mu    sync.RWMutex
-	tools []Tool
+	mu     sync.RWMutex
+	tools  []Tool
+	scoped map[string]scopedToolSet
 }
 
 // RegisterTools adds tools to the global registry.
@@ -59,16 +71,88 @@ func (r *toolRegistry) ClearTools() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tools = []Tool{}
+	r.scoped = nil
+}
+
+// RegisterToolsForScope replaces the tools for one opaque request scope.
+func (r *toolRegistry) RegisterToolsForScope(scope string, tools []Tool) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		r.RegisterTools(tools)
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneExpiredLocked(time.Now())
+	if r.scoped == nil {
+		r.scoped = make(map[string]scopedToolSet)
+	}
+	r.scoped[scope] = scopedToolSet{
+		tools:     append([]Tool(nil), tools...),
+		expiresAt: time.Now().Add(scopedToolTTL),
+	}
+}
+
+// ListToolsForScope returns only tools registered for the requested scope.
+func (r *toolRegistry) ListToolsForScope(scope string) []Tool {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return r.ListTools()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneExpiredLocked(time.Now())
+	entry, ok := r.scoped[scope]
+	if !ok {
+		return nil
+	}
+	return append([]Tool(nil), entry.tools...)
+}
+
+// ClearScope removes one request-scoped tool set.
+func (r *toolRegistry) ClearScope(scope string) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.scoped, scope)
+}
+
+func (r *toolRegistry) pruneExpiredLocked(now time.Time) {
+	for scope, entry := range r.scoped {
+		if !entry.expiresAt.After(now) {
+			delete(r.scoped, scope)
+		}
+	}
 }
 
 // GlobalRegistry is a global registry of MCP sessions, keyed by session ID.
 var GlobalRegistry = &sessionRegistry{sessions: map[string]*session{}}
 
+// IsCapabilityRequest permits the upstream M365 service to reach a scoped MCP
+// session without knowing the caller's API key. Both scope and session IDs are
+// short-lived opaque capabilities; legacy unscoped MCP endpoints remain behind
+// the normal API-key middleware.
+func IsCapabilityRequest(r *http.Request) bool {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/mcp/sse":
+		scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+		return scope != "" && len(GlobalToolRegistry.ListToolsForScope(scope)) > 0
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/mcp/message":
+		sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+		return sessionID != "" && GlobalRegistry.getSession(sessionID) != nil
+	default:
+		return false
+	}
+}
+
 // HandleToolsList returns the currently registered tools as JSON. Mount at /v1/mcp/tools.
 func HandleToolsList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	tools := GlobalToolRegistry.ListTools()
+	tools := GlobalToolRegistry.ListToolsForScope(r.URL.Query().Get("scope"))
 	if tools == nil {
 		tools = []Tool{}
 	}
@@ -94,7 +178,7 @@ type session struct {
 func (r *sessionRegistry) RegisterSession(provider ToolProvider) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	id := fmt.Sprintf("mcp-%d", time.Now().UnixNano())
+	id := "mcp-" + uuid.NewString()
 	r.sessions[id] = &session{
 		id:       id,
 		provider: provider,
@@ -133,8 +217,20 @@ func HandleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Create a new session
-	sessionID := GlobalRegistry.RegisterSession(nil)
+	// Bind the SSE session to the exact request-scoped tools. A missing scope
+	// retains the legacy global-registry behavior for standalone MCP clients.
+	var provider ToolProvider
+	if scope := strings.TrimSpace(r.URL.Query().Get("scope")); scope != "" {
+		tools := GlobalToolRegistry.ListToolsForScope(scope)
+		if len(tools) == 0 {
+			http.Error(w, "unknown or expired tool scope", http.StatusNotFound)
+			return
+		}
+		provider = NewStaticToolProvider(tools, nil)
+	}
+
+	// Create a new session.
+	sessionID := GlobalRegistry.RegisterSession(provider)
 	sess := GlobalRegistry.getSession(sessionID)
 	defer GlobalRegistry.UnregisterSession(sessionID)
 
@@ -250,18 +346,19 @@ func handleRPC(ctx context.Context, sess *session, req *jsonRPCRequest) *jsonRPC
 			"serverInfo":      map[string]any{"name": "m365-copilot2api", "version": "0.1.0"},
 		})
 	case "tools/list":
-		// First check session-specific tools, then fall back to global registry
+		// Scoped sessions must never fall back to the global registry, including
+		// when their provider returns an empty list or an error.
 		sess.providerMu.RLock()
 		provider := sess.provider
 		sess.providerMu.RUnlock()
 		var tools []Tool
 		if provider != nil {
 			t, err := provider.ListTools(ctx)
-			if err == nil && len(t) > 0 {
-				tools = t
+			if err != nil {
+				return newRPCError(req.ID, -32603, "list tools: "+err.Error())
 			}
-		}
-		if len(tools) == 0 {
+			tools = t
+		} else {
 			tools = GlobalToolRegistry.ListTools()
 		}
 		if tools == nil {

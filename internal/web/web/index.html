@@ -454,7 +454,7 @@ if (response.output_text) {
         <div class="stats">
           <div class="stat"><span class="stat-label">Total requests</span><span class="stat-value" id="ug-req">0</span><span class="stat-sub" id="ug-req-sub"></span></div>
           <div class="stat"><span class="stat-label">Total tokens</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub" id="ug-tok-sub"></span></div>
-          <div class="stat"><span class="stat-label">Cached tokens</span><span class="stat-value" id="ug-cache">0</span><span class="stat-unit">tokens</span></div>
+          <div class="stat"><span class="stat-label">Provider cache</span><span class="stat-value" id="ug-cache">0</span><span class="stat-sub" id="ug-cache-sub">History 0 · Reused 0</span></div>
           <div class="stat"><span class="stat-label">Average latency</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
         </div>
         <div class="chart-grid">
@@ -1217,6 +1217,7 @@ async function loadUsage(){
     $('ug-tok').textContent=fmtTok(s.tokens);
     $('ug-tok-sub').textContent='Input '+(s.input||0)+' · Output '+(s.output||0);
     $('ug-cache').textContent=fmtTok(s.cache);
+    $('ug-cache-sub').textContent='History '+fmtTok(s.history||0)+' · Reused '+(s.conversation_reused||0);
     $('ug-ms').textContent=(s.avg_ms||0).toLocaleString();
     renderTrend((d.stats||{}).trend||[]);
     renderBars('ugModels',(d.stats||{}).models||[],m=>m.name,'tokens');
@@ -1293,7 +1294,7 @@ async function loadUsageLogs(){
       <td><code style="font-size:11px" title="${x.api_key_prefix||'-'}">${x.api_key_prefix||'-'}</code></td>
       <td style="font-size:12px">${x.model||'-'}</td>
       <td><span class="usage-status">${(x.endpoint||'-').replace('/v1/','')}</span></td>
-      <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b> in${x.input_tokens||0}/out${x.output_tokens||0}/cache${x.cache_tokens||0}</span></td>
+      <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b> in${x.input_tokens||0}/out${x.output_tokens||0}/cache${x.cache_tokens||0} · hist${x.history_tokens||0} · ${x.conversation_reused?'reused':'fresh'}</span></td>
       <td style="font-size:12px;color:var(--muted)">${(x.duration_ms||0)} ms</td>
     </tr>`).join('');
     $('ugLogRows').innerHTML=rows||'<tr><td colspan="6" class="empty">No requests yet</td></tr>';

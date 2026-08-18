@@ -62,7 +62,7 @@ func (s *Server) conversationCleanup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		sessions := s.sessionResolver.ListSessions()
+		sessions := s.sessionResolver.ListSessionsForTenant(requestTenantID(r))
 		jsonOut(w, map[string]any{
 			"object": "list",
 			"data":   sessions,
@@ -72,7 +72,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			SessionID string `json:"session_id"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		sess, ok := s.sessionResolver.GetSession(body.SessionID)
+		sess, ok := s.sessionResolver.GetSessionForTenant(requestTenantID(r), body.SessionID)
 		if !ok {
 			jsonOut(w, map[string]any{
 				"object":     "session",
@@ -311,7 +311,7 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session_id required", http.StatusBadRequest)
 		return
 	}
-	if s.sessionResolver.DeleteSession(sessionID) {
+	if s.sessionResolver.DeleteSessionForTenant(requestTenantID(r), sessionID) {
 		jsonOut(w, map[string]any{"status": "deleted", "session_id": sessionID})
 	} else {
 		http.Error(w, "session not found", http.StatusNotFound)

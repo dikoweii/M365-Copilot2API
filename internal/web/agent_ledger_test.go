@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -97,5 +98,36 @@ func TestCompletionGuardRejectsUnsupportedSuccess(t *testing.T) {
 	}
 	if !completionEvidenceAllows("I cannot confirm completion because no tool results were returned.", buildAgentLedger(nil)) {
 		t.Fatal("honest incomplete response rejected")
+	}
+}
+
+func TestCurrentTurnCanRepeatToolCompletedInOlderTurn(t *testing.T) {
+	msgs := []oaiMsg{
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "old-call", "type": "function", "function": map[string]any{"name": "read_file", "arguments": `{"path":"notes.md"}`}}}},
+		{Role: "tool", ToolCallID: "old-call", Content: "old contents"},
+		{Role: "user", Content: "Read notes.md again because it may have changed."},
+	}
+	candidate := []detectedToolCall{{Name: "read_file", Arguments: json.RawMessage(`{"path":"notes.md"}`)}}
+	if got := filterCompletedCalls(candidate, buildAgentLedger(msgs)); len(got) != 0 {
+		t.Fatalf("full-history ledger should demonstrate the old regression, got %#v", got)
+	}
+	if got := filterCompletedCalls(candidate, buildAgentLedger(activeMessages(msgs))); len(got) != 1 {
+		t.Fatalf("current turn incorrectly filtered a legitimate repeat: %#v", got)
+	}
+}
+
+func TestShouldEnforceCompletionEvidenceRequiresActiveToolActivity(t *testing.T) {
+	tools := []map[string]any{{"type": "function"}}
+	if shouldEnforceCompletionEvidence(tools, agentLedger{}) {
+		t.Fatal("tool schemas alone must not enable completion evidence enforcement")
+	}
+	if !shouldEnforceCompletionEvidence(tools, agentLedger{Completed: []toolEvidence{{ID: "call-1"}}}) {
+		t.Fatal("completed active tool call must enable evidence enforcement")
+	}
+	if !shouldEnforceCompletionEvidence(tools, agentLedger{Pending: []toolEvidence{{ID: "call-2"}}}) {
+		t.Fatal("pending active tool call must enable evidence enforcement")
+	}
+	if shouldEnforceCompletionEvidence(nil, agentLedger{Completed: []toolEvidence{{ID: "call-3"}}}) {
+		t.Fatal("requests without tool schemas must not enable evidence enforcement")
 	}
 }

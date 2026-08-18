@@ -17,6 +17,7 @@ import (
 	"m365-copilot2api/internal/outbound"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -125,11 +126,11 @@ func (s *Server) clientForProxy(proxyURL string) *chathub.Client {
 		return s.chat
 	}
 	c := &chathub.Client{
-		HTTPHeader:  make(http.Header),
-		HTTPClient:  clients.HTTP,
-		Dialer:      clients.WebSocket,
-		Pool:        chathub.NewConnPool(clients.WebSocket, make(http.Header)),
-		Trace:       s.chat.Trace,
+		HTTPHeader: make(http.Header),
+		HTTPClient: clients.HTTP,
+		Dialer:     clients.WebSocket,
+		Pool:       chathub.NewConnPool(clients.WebSocket, make(http.Header)),
+		Trace:      s.chat.Trace,
 	}
 	c.HTTPHeader.Set("Origin", "https://m365.cloud.microsoft")
 	c.HTTPHeader.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0")
@@ -269,6 +270,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/models", s.openaiModels)
 	m.HandleFunc("/v1/chat/completions", s.openaiChat)
 	m.HandleFunc("/v1/responses", s.responses)
+	m.HandleFunc("/v1/responses/compact", s.responsesCompact)
 	m.HandleFunc("/v1/mcp/sse", mcp.HandleSSE)
 	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
 	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)
@@ -290,12 +292,18 @@ func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if mcp.IsCapabilityRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/v1/") {
-			if !s.validAPIKey(r) {
+			tenantID, ok := s.authenticateAPIKey(r)
+			if !ok {
 				http.Error(w, `{"error":{"message":"valid API key required","type":"auth_error"}}`, http.StatusUnauthorized)
 				return
 			}
-			next.ServeHTTP(w, r)
+			ctx := context.WithValue(r.Context(), apiTenantContextKey{}, tenantID)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 		if s.adminPassword == "" {
@@ -476,7 +484,10 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 	}
 }
-func (s *Server) validAPIKey(r *http.Request) bool {
+
+type apiTenantContextKey struct{}
+
+func requestAPICredential(r *http.Request) string {
 	raw := strings.TrimSpace(r.Header.Get("X-API-Key"))
 	if raw == "" {
 		v := r.Header.Get("Authorization")
@@ -484,13 +495,45 @@ func (s *Server) validAPIKey(r *http.Request) bool {
 			raw = strings.TrimSpace(v[7:])
 		}
 	}
-	if raw != "" && s.apiKeys.valid(raw) {
-		return true
+	return raw
+}
+
+func (s *Server) authenticateAPIKey(r *http.Request) (string, bool) {
+	raw := requestAPICredential(r)
+	if raw != "" && s.apiKeys != nil {
+		if id, ok := s.apiKeys.authenticate(raw); ok {
+			return "key:" + id, true
+		}
 	}
 	if strings.HasPrefix(raw, "eyJ") {
-		return true
+		return "jwt:" + keyHash(raw), true
 	}
-	return false
+	return "", false
+}
+
+func (s *Server) validAPIKey(r *http.Request) bool {
+	_, ok := s.authenticateAPIKey(r)
+	return ok
+}
+
+func requestTenantID(r *http.Request) string {
+	if tenantID, ok := r.Context().Value(apiTenantContextKey{}).(string); ok && tenantID != "" {
+		return tenantID
+	}
+	if raw := requestAPICredential(r); raw != "" {
+		return "credential:" + keyHash(raw)
+	}
+	// Internal/admin calls and direct handler tests do not pass through the
+	// public API-key middleware. Keep them in an isolated local-only scope.
+	return "local"
+}
+
+func tenantScopedID(tenantID, identity string) string {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return ""
+	}
+	return keyHash(tenantID + "\x00" + identity)
 }
 
 func jsonOut(w http.ResponseWriter, v any) {
@@ -1273,6 +1316,24 @@ func normalizeLegacyTools(body *oaiReq) {
 	}
 }
 
+func toolChoiceDisablesTools(choice any) bool {
+	return strings.EqualFold(strings.TrimSpace(normalizedToolChoiceMode(choice)), "none")
+}
+
+func normalizeRequestTools(body *oaiReq) {
+	normalizeLegacyTools(body)
+	if toolChoiceDisablesTools(body.ToolChoice) {
+		body.Tools = nil
+		body.Functions = nil
+	}
+}
+
+func applyRequestSessionKey(body *oaiReq, r *http.Request) {
+	if body.SessionKey == "" {
+		body.SessionKey = strings.TrimSpace(r.Header.Get("X-M365-Session-ID"))
+	}
+}
+
 func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string) chathub.Request {
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
@@ -1281,38 +1342,60 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 		answerPrompt += "\nFINAL ANSWER RULE: Report only actions supported by completed tool results. If the goal is not fully verified, state exactly what remains unconfirmed."
 	}
 	req := chathub.Request{Text: answerPrompt, Tone: tone, ConversationID: body.ConversationID, SessionID: body.SessionID, Attachments: body.Attachments}
-	if planningMode == "native" {
+	if planningMode == "native" && !toolChoiceDisablesTools(body.ToolChoice) {
 		req.Tools = body.Tools
 		req.ToolChoice = body.ToolChoice
 	}
-	if mcpServerURL != "" {
+	if mcpServerURL != "" && !toolChoiceDisablesTools(body.ToolChoice) {
 		req.Tools = body.Tools
 		if req.ToolChoice == nil {
 			req.ToolChoice = body.ToolChoice
 		}
+		req.MCPServerURL = mcpServerURL
 	}
-	if len(body.Tools) > 0 {
-		mcpTools := make([]mcp.Tool, 0, len(body.Tools))
-		for _, t := range body.Tools {
-			var f struct {
-				Name, Description string
-				Parameters        json.RawMessage `json:"parameters"`
-			}
-			if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
-				continue
-			}
-			var schema map[string]any
-			if json.Unmarshal(f.Parameters, &schema) != nil {
-				schema = map[string]any{"type": "object"}
-			}
-			mcpTools = append(mcpTools, mcp.Tool{Name: f.Name, Description: f.Description, InputSchema: schema})
-		}
-		if len(mcpTools) > 0 {
-			mcp.GlobalToolRegistry.MergeTools(mcpTools)
-		}
-	}
-	req.MCPServerURL = mcpServerURL
 	return req
+}
+
+func mcpToolsFromRequest(tools []chathub.Tool) []mcp.Tool {
+	out := make([]mcp.Tool, 0, len(tools))
+	for _, t := range tools {
+		var f struct {
+			Name, Description string
+			Parameters        json.RawMessage `json:"parameters"`
+		}
+		if json.Unmarshal(t.Function, &f) != nil || f.Name == "" {
+			continue
+		}
+		var schema map[string]any
+		if json.Unmarshal(f.Parameters, &schema) != nil {
+			schema = map[string]any{"type": "object"}
+		}
+		out = append(out, mcp.Tool{Name: f.Name, Description: f.Description, InputSchema: schema})
+	}
+	return out
+}
+
+func configuredMCPServerURL(scope string) (string, error) {
+	raw := firstNonEmpty(os.Getenv("M365_MCP_PUBLIC_URL"), os.Getenv("M365_PUBLIC_URL"))
+	if raw == "" {
+		return "", fmt.Errorf("M365_MCP_PUBLIC_URL or M365_PUBLIC_URL must be configured when tools are enabled")
+	}
+	base, err := url.Parse(raw)
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.User != nil {
+		return "", fmt.Errorf("MCP public URL must be an absolute HTTPS URL without user info")
+	}
+	if base.RawQuery != "" || base.Fragment != "" {
+		return "", fmt.Errorf("MCP public URL must not contain a query or fragment")
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + "/v1/mcp/sse"
+	query := base.Query()
+	query.Set("scope", scope)
+	base.RawQuery = query.Encode()
+	return base.String(), nil
+}
+
+func shouldEnforceCompletionEvidence(tools []map[string]any, active agentLedger) bool {
+	return len(tools) > 0 && (len(active.Completed) > 0 || len(active.Pending) > 0)
 }
 
 func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
@@ -1350,17 +1433,20 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", toneErr.Error())
 		return
 	}
-	normalizeLegacyTools(&body)
+	normalizeRequestTools(&body)
 	body.ConversationID = firstNonEmpty(body.ConversationID, body.ConversationIDC)
 	body.SessionID = firstNonEmpty(body.SessionID, body.SessionIDC)
+	applyRequestSessionKey(&body, r)
+	tenantID := requestTenantID(r)
+	sessionLookupKey := tenantScopedID(tenantID, body.SessionKey)
+	userLookupKey := tenantScopedID(tenantID, body.User)
 	log.Printf("[req-trace] id=%s stage=body_parsed messages=%d tools=%d choice=%s raw_bytes=%d", requestID, len(body.Messages), len(body.Tools), normalizedToolChoiceMode(body.ToolChoice), len(raw))
 	if err := validateToolConversation(body.Messages); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "tool_protocol_error", err.Error())
 		return
 	}
-	// Rebuild a protocol-neutral evidence ledger from actual tool calls/results.
-	// Round limits apply only to the current user turn; full history still informs evidence.
-	ledger := buildAgentLedger(body.Messages)
+	// Tool evidence and round limits apply only to the current user turn. Older
+	// calls may legitimately be repeated in a later turn with the same arguments.
 	activeLedger := buildAgentLedger(activeMessages(body.Messages))
 	if err := activeLedger.CanContinue(maxToolRounds()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -1385,15 +1471,15 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.SessionKey != "" {
-		if v, ok := s.sessions.get(body.SessionKey); ok {
+	if sessionLookupKey != "" {
+		if v, ok := s.sessions.get(sessionLookupKey); ok {
 			body.AccountID = firstNonEmpty(body.AccountID, v.AccountID)
 			body.ConversationID = firstNonEmpty(body.ConversationID, v.ConversationID)
 			body.SessionID = firstNonEmpty(body.SessionID, v.SessionID)
 		}
 	}
-	if body.User != "" && body.ConversationID == "" {
-		if us, ok := s.userSessions.Get(body.User); ok {
+	if userLookupKey != "" && body.ConversationID == "" {
+		if us, ok := s.userSessions.Get(userLookupKey); ok {
 			body.AccountID = firstNonEmpty(body.AccountID, us.AccountID)
 			body.ConversationID = us.ConversationID
 			body.SessionID = us.SessionID
@@ -1403,6 +1489,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// 内容键会话复用：命中后云端对话已存全量历史，只需把客户端新增的
 	// 消息拼成增量 prompt 发送（对齐 DeepSeek 上下文缓存语义）。
 	answerPrompt := prompt
+	contextReused := false
 	resolvedConversationID := ""
 	if body.ConversationID == "" && len(body.Messages) > 0 {
 		resolved := s.sessionResolver.Resolve(r, &body)
@@ -1418,6 +1505,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				if incPrompt != "" {
 					answerPrompt = incPrompt
 					body.Attachments = incAtt
+					contextReused = true
 				}
 			}
 		}
@@ -1446,9 +1534,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// was provided by client, session key, user session, or session resolver.
 	convReused := false
 	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
-	if body.ConversationID == "" && len(body.Messages) > 1 {
+	convCacheScope := conversationCacheScope(r, body)
+	if convCacheScope != "" && body.ConversationID == "" && len(body.Messages) > 1 {
 		sysHash := systemPromptHash(body.Messages)
-		if cached := s.convCache.Lookup(acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
+		if cached := s.convCache.Lookup(convCacheScope, acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
 			if len(body.Messages) > cached.MessageCount {
 				incPrompt, incAtt := flattenPromptMessages(body.Messages[cached.MessageCount:], nil)
 				incPrompt = strings.TrimSpace(incPrompt)
@@ -1458,12 +1547,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					answerPrompt = incPrompt
 					body.Attachments = incAtt
 					convReused = true
+					contextReused = true
 					log.Printf("[conv-cache] hit account=%s model=%s conversation=%s cached_msgs=%d new_msgs=%d", acc.ID, convCacheModel, cached.ConversationID, cached.MessageCount, len(body.Messages))
 				}
 			}
 		}
 	}
-	if !convReused && body.ConversationID == "" {
+	if convCacheScope != "" && !convReused && body.ConversationID == "" {
 		log.Printf("[conv-cache] miss account=%s model=%s", acc.ID, convCacheModel)
 	}
 
@@ -1480,12 +1570,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	}
 	var mcpServerURL string
 	if len(toolMaps) > 0 {
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
+		mcpTools := mcpToolsFromRequest(body.Tools)
+		if len(mcpTools) > 0 {
+			toolScope := "tools-" + uuid.NewString()
+			mcpServerURL, err = configuredMCPServerURL(toolScope)
+			if err != nil {
+				writeOpenAIError(w, http.StatusServiceUnavailable, "mcp_configuration_error", err.Error())
+				return
+			}
+			mcp.GlobalToolRegistry.RegisterToolsForScope(toolScope, mcpTools)
+			defer mcp.GlobalToolRegistry.ClearScope(toolScope)
+			log.Printf("[mcp] tools=%d configured_gateway=true", len(toolMaps))
 		}
-		mcpServerURL = fmt.Sprintf("%s://%s/v1/mcp/sse", scheme, r.Host)
-		log.Printf("[mcp] tools=%d mcp_gateway=%s", len(toolMaps), mcpServerURL)
 	}
 	validateCalls := func(stage string, calls []detectedToolCall) ([]detectedToolCall, int) {
 		valid, rejected := validateDetectedToolCalls(calls, toolMaps, body.ToolChoice)
@@ -1511,7 +1607,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// Only fall through to text streaming when the router explicitly selects
 		// no tool; this prevents a natural-language preamble from becoming a
 		// completed assistant turn with the actual call lost.
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
+		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
 		log.Printf("[req-trace] id=%s stage=router_start prompt_len=%d", requestID, len(routePrompt))
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
@@ -1526,7 +1622,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
-		calls = filterCompletedCalls(calls, ledger)
+		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
 		if !parsed {
 			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
@@ -1535,12 +1631,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			if repairErr == nil {
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
-				calls = filterCompletedCalls(calls, ledger)
+				calls = filterCompletedCalls(calls, activeLedger)
 				calls, _ = validateCalls("router", calls)
 			}
 		}
 		if parsed && len(calls) > 0 {
-			scope := fmt.Sprintf("%d:%v:stream", len(body.Messages), completedCallIDs(ledger))
+			scope := fmt.Sprintf("%d:%v:stream", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
@@ -1550,7 +1646,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Stream {
-		answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
+		answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL)
 		answerPrompt = answerReq.Text
 		log.Printf("[req-trace] id=%s stage=answer_start prompt_len=%d native_tools=%d mcp=%s", requestID, len(answerPrompt), len(answerReq.Tools), mcpServerURL)
 		id := "chatcmpl-" + uuid.NewString()
@@ -1707,7 +1803,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 			if convReused {
-				s.invalidateConvCache(acc.ID, convCacheModel)
+				s.invalidateConvCache(convCacheScope, acc.ID, convCacheModel)
 			}
 			msg := upstreamError(err)
 			if IsRateLimited(err) {
@@ -1728,12 +1824,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			rawCalls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
 		}
 		calls, rejected := validateCalls("stream", rawCalls)
+		calls = filterCompletedCalls(calls, activeLedger)
 		toolResult := chathub.Result{Text: text.String()}
 		if len(calls) == 0 && rejected > 0 {
 			// A native ChatHub event can contain a fabricated or empty tool name.
 			// Do not leak it to the local runner: ask the model to remap the intent
 			// to exactly one of the tools the client actually declared.
-			repairPrompt := modelToolRouterPrompt(prompt+"\n"+ledger.RouterContext(), toolMaps, "required") +
+			repairPrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, "required") +
 				"\nREPAIR RULE: The previous upstream event selected an undeclared tool. Select one declared tool that performs the intended operation. Never return unknown_tool."
 			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil {
@@ -1762,11 +1859,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}())
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
 			_ = writeToolResponse(w, id, model, true, calls, toolResult)
-			if body.User != "" && res.ConversationID != "" {
-				s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+			if userLookupKey != "" && res.ConversationID != "" {
+				s.userSessions.Put(userLookupKey, res.ConversationID, res.SessionID, acc.ID)
 			}
-			s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-			s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+			s.bindConversation(acc, &body, r, res, prompt, answerPrompt, contextReused, startedAt)
+			s.storeConvCache(convCacheScope, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 			return
 		}
 		if err := emitText(pending.String()); err != nil {
@@ -1776,17 +1873,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finishChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
-		if body.User != "" && res.ConversationID != "" {
-			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+		if userLookupKey != "" && res.ConversationID != "" {
+			s.userSessions.Put(userLookupKey, res.ConversationID, res.SessionID, acc.ID)
 		}
-		s.bindConversation(acc, &body, r, res, answerPrompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.bindConversation(acc, &body, r, res, prompt, answerPrompt, contextReused, startedAt)
+		s.storeConvCache(convCacheScope, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
 	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
+		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		if routeErr != nil {
 			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown)
@@ -1826,10 +1923,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		calls = filterCompletedCalls(calls, ledger)
+		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
 		if len(calls) > 0 {
-			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(ledger))
+			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
@@ -1841,14 +1938,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			defs, _ := json.Marshal(toolMaps)
 			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
 APPLICATION_REQUEST_AND_EVIDENCE:
-` + prompt + "\n" + ledger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
+` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
 			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments})
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
-				calls = filterCompletedCalls(calls, ledger)
+				calls = filterCompletedCalls(calls, activeLedger)
 				calls, _ = validateCalls("router", calls)
 				if parsed && len(calls) > 0 {
-					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(ledger))
+					scope := fmt.Sprintf("%d:%v:required-retry", len(body.Messages), completedCallIDs(activeLedger))
 					for i := range calls {
 						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 					}
@@ -1861,7 +1958,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return
 		}
 	}
-	answerReq := buildAnswerRequest(answerPrompt, tone, body, ledger, planningMode, mcpServerURL)
+	answerReq := buildAnswerRequest(answerPrompt, tone, body, activeLedger, planningMode, mcpServerURL)
 	answerPrompt = answerReq.Text
 	var res chathub.Result
 	if body.Stream {
@@ -1959,7 +2056,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 			if convReused {
-				s.invalidateConvCache(acc.ID, convCacheModel)
+				s.invalidateConvCache(convCacheScope, acc.ID, convCacheModel)
 			}
 			msg := upstreamError(err)
 			if IsRateLimited(err) {
@@ -2019,7 +2116,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if err != nil {
 		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 		if convReused {
-			s.invalidateConvCache(acc.ID, convCacheModel)
+			s.invalidateConvCache(convCacheScope, acc.ID, convCacheModel)
 			log.Printf("[conv-cache] invalidated account=%s model=%s after error: %v", acc.ID, convCacheModel, err)
 		}
 		writeUpstreamError(w, err)
@@ -2027,24 +2124,24 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	s.accountPool.MarkSuccess(acc.ID)
 	if body.Stream {
-		if body.User != "" && res.ConversationID != "" {
-			s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+		if userLookupKey != "" && res.ConversationID != "" {
+			s.userSessions.Put(userLookupKey, res.ConversationID, res.SessionID, acc.ID)
 		}
-		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.bindConversation(acc, &body, r, res, prompt, answerPrompt, contextReused, startedAt)
+		s.storeConvCache(convCacheScope, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 		return
 	}
 
-	if body.SessionKey != "" {
-		s.sessions.upsert(conversation{ID: body.SessionKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: prompt})
+	if sessionLookupKey != "" {
+		s.sessions.upsert(conversation{ID: sessionLookupKey, AccountID: acc.ID, ConversationID: res.ConversationID, SessionID: res.SessionID, Title: prompt})
 	}
-	if body.User != "" && res.ConversationID != "" {
-		s.userSessions.Put(body.User, res.ConversationID, res.SessionID, acc.ID)
+	if userLookupKey != "" && res.ConversationID != "" {
+		s.userSessions.Put(userLookupKey, res.ConversationID, res.SessionID, acc.ID)
 		log.Printf("[user-session] put user=%s conversation=%s session=%s", body.User, res.ConversationID, res.SessionID)
 	}
 	if res.ConversationID != "" {
-		s.bindConversation(acc, &body, r, res, prompt, startedAt)
-		s.storeConvCache(acc.ID, convCacheModel, res, tone, body.Messages, convReused)
+		s.bindConversation(acc, &body, r, res, prompt, answerPrompt, contextReused, startedAt)
+		s.storeConvCache(convCacheScope, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 	}
 	if res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)
@@ -2076,6 +2173,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	invalidDetectedTool := false
 	if rawCalls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(rawCalls) > 0 {
 		calls, rejected := validateCalls("fenced", rawCalls)
+		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = rejected > 0
 		if len(calls) > 0 {
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
@@ -2085,6 +2183,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	if rawCalls := nativeToolCalls(res.Events, body.Tools); len(rawCalls) > 0 {
 		calls, rejected := validateCalls("native", rawCalls)
+		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = invalidDetectedTool || rejected > 0
 		if len(calls) > 0 {
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
@@ -2095,7 +2194,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// Recover natural-language tool intent in native mode, and repair any
 	// structured event that failed the declared-name/schema boundary.
 	if (planningMode == "native" || invalidDetectedTool) && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(prompt+"\n"+ledger.RouterContext(), toolMaps, body.ToolChoice)
+		routePrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
 		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		if routeErr == nil {
 			calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
@@ -2105,9 +2204,10 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				}
 			}
+			calls = filterCompletedCalls(calls, activeLedger)
 			calls, _ = validateCalls("native-recovery", calls)
 			if parsed && len(calls) > 0 {
-				scope := fmt.Sprintf("%d:%v:native-recovery", len(body.Messages), completedCallIDs(ledger))
+				scope := fmt.Sprintf("%d:%v:native-recovery", len(body.Messages), completedCallIDs(activeLedger))
 				for i := range calls {
 					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 				}
@@ -2122,7 +2222,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
 		return
 	}
-	if len(toolMaps) > 0 && !completionEvidenceAllows(res.Text, ledger) {
+	if shouldEnforceCompletionEvidence(toolMaps, activeLedger) && !completionEvidenceAllows(res.Text, activeLedger) {
 		res.Text = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
 	}
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
@@ -2269,8 +2369,12 @@ const sessionHeaderName = "X-M365-Session-Id"
 // bindConversation 在请求完成后登记会话解析器索引与缓存统计，流式与非流式
 // 路径共用。会话为内容键，云端的对话由 auto_cleanup 按 2h 闲置窗口回收，
 // 这里不再做"用完即删"，否则复用永远不可能命中。
-func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt string, startedAt time.Time) {
+func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt, sentPrompt string, contextReused bool, startedAt time.Time) {
 	if res.ConversationID == "" {
+		return
+	}
+	if isTransientModelRequest(r) {
+		s.dropTransientConversation(res.ConversationID)
 		return
 	}
 	historyBody := *body
@@ -2296,33 +2400,31 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	for _, msg := range body.Messages[:upper] {
 		historyTokens += EstimateTokens(contentToString(msg.Content))
 	}
-	newTokens := EstimateTokens(prompt)
-	sessions := s.sessionResolver.ListSessions()
-	cacheStats.RecordRequest(apiKey, historyTokens > 0, newTokens, historyTokens, len(sessions))
+	inputTokens := EstimateTokens(sentPrompt)
+	tokensSaved := int64(0)
+	if contextReused {
+		tokensSaved = historyTokens
+	}
+	sessions := s.sessionResolver.ListSessionsForTenant(requestTenantID(r))
+	cacheStats.RecordRequest(apiKey, contextReused, inputTokens, tokensSaved, len(sessions))
 	s.usage.record(UsageRecord{
-		Time:         time.Now(),
-		APIKeyPrefix: apiKey,
-		AccountEmail: acc.Email,
-		Model:        firstNonEmpty(body.Model, "m365-copilot"),
-		Endpoint:     "/v1/chat/completions",
-		Stream:       body.Stream,
-		InputTokens:  newTokens,
-		OutputTokens: EstimateTokens(res.Text),
-		CacheTokens:  historyTokens,
-		DurationMs:   time.Since(startedAt).Milliseconds(),
-		Status:       200,
+		Time:               time.Now(),
+		APIKeyPrefix:       apiKey,
+		AccountEmail:       acc.Email,
+		Model:              firstNonEmpty(body.Model, "m365-copilot"),
+		Endpoint:           "/v1/chat/completions",
+		Stream:             body.Stream,
+		InputTokens:        inputTokens,
+		OutputTokens:       EstimateTokens(res.Text),
+		HistoryTokens:      historyTokens,
+		ConversationReused: contextReused,
+		DurationMs:         time.Since(startedAt).Milliseconds(),
+		Status:             200,
 	})
 }
 
 func extractAPIKey(r *http.Request) string {
-	key := strings.TrimSpace(r.Header.Get("X-API-Key"))
-	if key != "" {
-		return key
-	}
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-		key = strings.TrimSpace(auth[7:])
-	}
+	key := requestAPICredential(r)
 	if len(key) > 8 {
 		return key[:8] + "..."
 	}

@@ -1,12 +1,25 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestSessionResolverUsesDataDirByDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("M365_DATA_DIR", dir)
+	t.Setenv("M365_SESSION_CACHE", "")
+
+	sr := openSessionResolver()
+	if want := filepath.Join(dir, "sessions.json"); sr.path != want {
+		t.Fatalf("session cache path = %q, want %q", sr.path, want)
+	}
+}
 
 func TestResolveContentKeyedSameIdentity(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
@@ -145,15 +158,64 @@ func TestResolverEvictsAfterTTL(t *testing.T) {
 
 	// 把会话标记为超过默认 2h 闲置。
 	sr.mu.Lock()
-	old := sr.sessions["sess-old"]
+	storageKey := tenantScopedID("local", "sess-old")
+	old := sr.sessions[storageKey]
 	old.LastUsedAt = time.Now().UTC().Add(-3 * time.Hour)
-	sr.sessions["sess-old"] = old
+	sr.sessions[storageKey] = old
 	sr.mu.Unlock()
 
 	res := sr.Resolve(httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "旧问题"}}})
 	if !res.IsNew {
 		t.Fatalf("闲置超 TTL 的会话应失效，got matched=%s", res.MatchedBy)
+	}
+}
+
+func TestResolverIsolatesExplicitSessionAcrossTenants(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+	body := &oaiReq{Messages: []oaiMsg{{Role: "user", Content: "same request"}}}
+
+	reqA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqA.Header.Set("Authorization", "Bearer shared-prefix-tenant-a")
+	reqA.Header.Set("X-M365-Session-ID", "shared-session")
+	sr.Bind("upstream-session-a", "conversation-a", "account-a", body, "", reqA)
+
+	reqB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqB.Header.Set("Authorization", "Bearer shared-prefix-tenant-b")
+	reqB.Header.Set("X-M365-Session-ID", "shared-session")
+	if got := sr.Resolve(reqB, body); !got.IsNew {
+		t.Fatalf("tenant B reused tenant A conversation: %#v", got)
+	}
+
+	sr.Bind("upstream-session-b", "conversation-b", "account-b", body, "", reqB)
+	if got := sr.Resolve(reqA, body); got.IsNew || got.ConversationID != "conversation-a" {
+		t.Fatalf("tenant A explicit session = %#v", got)
+	}
+	if got := sr.Resolve(reqB, body); got.IsNew || got.ConversationID != "conversation-b" {
+		t.Fatalf("tenant B explicit session = %#v", got)
+	}
+}
+
+func TestResolverRejectsLegacyUnscopedPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	t.Setenv("M365_SESSION_CACHE", path)
+	legacy := []sessionBinding{{
+		SessionID:      "legacy-session",
+		ConversationID: "legacy-conversation",
+		LastUsedAt:     time.Now().UTC(),
+	}}
+	b, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sr := openSessionResolver()
+	if got := sr.ListSessions(); len(got) != 0 {
+		t.Fatalf("loaded legacy unscoped sessions: %#v", got)
 	}
 }
 

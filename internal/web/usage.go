@@ -12,17 +12,19 @@ import (
 )
 
 type UsageRecord struct {
-	Time         time.Time `json:"time"`
-	APIKeyPrefix string    `json:"api_key_prefix"`
-	AccountEmail string    `json:"account_email"`
-	Model        string    `json:"model"`
-	Endpoint     string    `json:"endpoint"`
-	Stream       bool      `json:"stream"`
-	InputTokens  int64     `json:"input_tokens"`
-	OutputTokens int64     `json:"output_tokens"`
-	CacheTokens  int64     `json:"cache_tokens"`
-	DurationMs   int64     `json:"duration_ms"`
-	Status       int       `json:"status"`
+	Time               time.Time `json:"time"`
+	APIKeyPrefix       string    `json:"api_key_prefix"`
+	AccountEmail       string    `json:"account_email"`
+	Model              string    `json:"model"`
+	Endpoint           string    `json:"endpoint"`
+	Stream             bool      `json:"stream"`
+	InputTokens        int64     `json:"input_tokens"`
+	OutputTokens       int64     `json:"output_tokens"`
+	CacheTokens        int64     `json:"cache_tokens"`
+	HistoryTokens      int64     `json:"history_tokens,omitempty"`
+	ConversationReused bool      `json:"conversation_reused,omitempty"`
+	DurationMs         int64     `json:"duration_ms"`
+	Status             int       `json:"status"`
 }
 
 const maxUsageRecords = 50000
@@ -128,7 +130,7 @@ func (s *usageLog) snapshot(days int) map[string]any {
 	dayAgo := time.Now().Add(-24 * time.Hour)
 
 	var (
-		requests, in, out, cache, durationMs int64
+		requests, in, out, cache, history, reused, durationMs int64
 		todayReq, todayTok                   int64
 		h24Req, h24Tok                       int64
 	)
@@ -146,6 +148,10 @@ func (s *usageLog) snapshot(days int) map[string]any {
 		in += rec.InputTokens
 		out += rec.OutputTokens
 		cache += rec.CacheTokens
+		history += rec.HistoryTokens
+		if rec.ConversationReused {
+			reused++
+		}
 		durationMs += rec.DurationMs
 		if rec.Time.After(today) {
 			todayReq++
@@ -215,16 +221,18 @@ func (s *usageLog) snapshot(days int) map[string]any {
 
 	return map[string]any{
 		"summary": map[string]any{
-			"requests":         requests,
-			"tokens":           in + out + cache,
-			"input":            in,
-			"output":           out,
-			"cache":            cache,
-			"avg_ms":           avgMs,
-			"today_requests":   todayReq,
-			"today_tokens":     todayTok,
-			"last24h_requests": h24Req,
-			"last24h_tokens":   h24Tok,
+			"requests":            requests,
+			"tokens":              in + out + cache,
+			"input":               in,
+			"output":              out,
+			"cache":               cache,
+			"history":             history,
+			"conversation_reused": reused,
+			"avg_ms":              avgMs,
+			"today_requests":      todayReq,
+			"today_tokens":        todayTok,
+			"last24h_requests":    h24Req,
+			"last24h_tokens":      h24Tok,
 		},
 		"models":    model,
 		"endpoints": ep,

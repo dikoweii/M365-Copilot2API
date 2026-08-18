@@ -3,9 +3,12 @@ package web
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"m365-copilot2api/internal/chathub"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
+
+	"m365-copilot2api/internal/chathub"
 )
 
 type cachedConversation struct {
@@ -32,35 +35,45 @@ func newConversationCache() *conversationCache {
 	}
 }
 
-func (c *conversationCache) key(accountID, model string) string {
-	return accountID + "|" + model
+func (c *conversationCache) key(scope, accountID, model string) string {
+	return scope + "|" + accountID + "|" + model
 }
 
-func (c *conversationCache) Lookup(accountID, model string) *cachedConversation {
+func (c *conversationCache) Lookup(scope, accountID, model string) *cachedConversation {
+	if strings.TrimSpace(scope) == "" {
+		return nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry := c.entries[c.key(accountID, model)]
+	key := c.key(scope, accountID, model)
+	entry := c.entries[key]
 	if entry == nil {
 		return nil
 	}
 	if time.Since(entry.LastUsedAt) > c.maxAge {
-		delete(c.entries, c.key(accountID, model))
+		delete(c.entries, key)
 		return nil
 	}
 	return entry
 }
 
-func (c *conversationCache) Store(accountID, model string, conv *cachedConversation) {
+func (c *conversationCache) Store(scope, accountID, model string, conv *cachedConversation) {
+	if strings.TrimSpace(scope) == "" {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	conv.LastUsedAt = time.Now()
-	c.entries[c.key(accountID, model)] = conv
+	c.entries[c.key(scope, accountID, model)] = conv
 }
 
-func (c *conversationCache) Invalidate(accountID, model string) {
+func (c *conversationCache) Invalidate(scope, accountID, model string) {
+	if strings.TrimSpace(scope) == "" {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, c.key(accountID, model))
+	delete(c.entries, c.key(scope, accountID, model))
 }
 
 func (c *conversationCache) GC() {
@@ -103,11 +116,24 @@ func extractLastUserMessage(messages []oaiMsg) string {
 	return ""
 }
 
-func (s *Server) storeConvCache(accID, model string, res chathub.Result, tone string, messages []oaiMsg, reused bool) {
+func conversationCacheScope(r *http.Request, body oaiReq) string {
+	identity := strings.TrimSpace(body.SessionKey)
+	if identity == "" {
+		identity = strings.TrimSpace(body.User)
+	}
+	if identity == "" {
+		return ""
+	}
+	tenant := requestTenantID(r)
+	h := sha256.Sum256([]byte(tenant + "\x00" + identity))
+	return hex.EncodeToString(h[:])
+}
+
+func (s *Server) storeConvCache(scope, accID, model string, res chathub.Result, tone string, messages []oaiMsg, reused bool) {
 	if res.ConversationID == "" {
 		return
 	}
-	cached := s.convCache.Lookup(accID, model)
+	cached := s.convCache.Lookup(scope, accID, model)
 	entry := &cachedConversation{
 		ConversationID: res.ConversationID,
 		SessionID:      res.SessionID,
@@ -120,9 +146,9 @@ func (s *Server) storeConvCache(accID, model string, res chathub.Result, tone st
 	} else {
 		entry.TurnCount = 1
 	}
-	s.convCache.Store(accID, model, entry)
+	s.convCache.Store(scope, accID, model, entry)
 }
 
-func (s *Server) invalidateConvCache(accID, model string) {
-	s.convCache.Invalidate(accID, model)
+func (s *Server) invalidateConvCache(scope, accID, model string) {
+	s.convCache.Invalidate(scope, accID, model)
 }

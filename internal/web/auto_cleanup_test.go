@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+func TestConversationManagerUsesDataDirByDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("M365_DATA_DIR", dir)
+	t.Setenv("M365_CONVERSATION_CACHE", "")
+
+	cm := openConversationManager()
+	if want := filepath.Join(dir, "conversations.json"); cm.path != want {
+		t.Fatalf("conversation cache path = %q, want %q", cm.path, want)
+	}
+}
+
 func newTestServerForAutoCleanup(t *testing.T) *Server {
 	t.Helper()
 	dir := t.TempDir()
