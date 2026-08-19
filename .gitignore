@@ -1,0 +1,86 @@
+# Local credentials and runtime state
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+accounts.json
+accounts*.json
+api-keys.json
+credentials*.json
+oauth*.json
+tokens*.json
+sessions*.json
+conversations*.json
+settings.json
+usage.jsonl
+conversation-index.json
+*.token
+*.tokens
+*.har
+cookies*.txt
+/tmp/
+
+# Build artifacts
+/m365-copilot2api
+/m365-copilot2api.exe
+/m365-copilot2api.exe.rollback
+/bin/
+/dist/
+*.out
+*.log
+*.prof
+coverage/
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+# IDE/OS
+.idea/
+.vscode/
+.DS_Store
+# Local runtime and diagnostic artifacts
+/debug-logs.jsonl
+/server
+/m365-copilot2api.next
+/m365-copilot2api.service
+/m365-copilot2api.rollback*
+/m365-copilot2api.exe~
+/data/
+/secrets/
+.runtime-backups/
+backups/
+runtime.pid
+conversations.json
+sessions.json
+test-results.jsonl
+server.log
+server-error.log
+*.pid
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.sqlite
+*.sqlite3
+*.db
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+/deploy/targets/*.conf
+!/deploy/targets/example.conf
+/docs/screenshots/
+
+# Local agent memory (machine-specific notes)
+AGENTS.md
+
+# WIP build during this session
+/m365-copilot2api.new*
+
+*.exe
+*.exe~
+*.bak*
+_wip_backup_*
+*.dll

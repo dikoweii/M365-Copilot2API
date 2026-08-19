@@ -1,0 +1,1747 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>M365 Copilot2API</title><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet"><script src="https://unpkg.com/lucide@latest"></script><style>
+:root{color-scheme:light dark;--bg:#f5f5f7;--surface:rgba(255,255,255,0.72);--surface-solid:#fff;--surface-border:rgba(255,255,255,0.5);--line:rgba(0,0,0,0.06);--line-strong:rgba(0,0,0,0.1);--text:#1d1d1f;--muted:#86868b;--accent:#0071e3;--accent-hover:#0077ed;--primary:#1d1d1f;--primary-hover:#000;--green:#34c759;--red:#ff3b30;--orange:#ff9f0a;--purple:#bf5af2;--sidebar-w:240px;--shadow-sm:0 2px 8px rgba(0,0,0,0.04);--shadow:0 8px 32px rgba(0,0,0,0.06);--shadow-lg:0 16px 48px rgba(0,0,0,0.1);--radius:14px;--radius-sm:10px;--ease-out:cubic-bezier(0.23,1,0.32,1);--ease-in-out:cubic-bezier(0.77,0,0.175,1);--ease-spring:cubic-bezier(0.32,0.72,0,1)}
+@media(prefers-color-scheme:dark){:root{--bg:#1c1c1e;--surface:rgba(44,44,46,0.75);--surface-solid:#2c2c2e;--surface-border:rgba(255,255,255,0.06);--line:rgba(255,255,255,0.06);--line-strong:rgba(255,255,255,0.12);--text:#f5f5f7;--muted:#98989d;--accent:#0a84ff;--accent-hover:#409cff;--primary:#f5f5f7;--primary-hover:#fff;--green:#30d158;--red:#ff453a;--orange:#ff9f0a;--purple:#bf5af2;--shadow-sm:0 2px 8px rgba(0,0,0,0.15);--shadow:0 8px 32px rgba(0,0,0,0.2);--shadow-lg:0 16px 48px rgba(0,0,0,0.3)}}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{max-width:100%}
+body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display","Noto Sans SC",-apple-system,BlinkMacSystemFont,system-ui,sans-serif;font-size:14px;line-height:1.4706;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;transition:background .3s ease,color .3s ease}
+.app{display:flex;min-height:100vh;animation:fadeIn .4s var(--ease-out)}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes scaleIn{from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)}}
+@keyframes springIn{from{opacity:0;transform:scale(0.9) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+
+/* Sidebar - Translucent material */
+.sidebar{width:var(--sidebar-w);background:var(--surface);-webkit-backdrop-filter:blur(30px) saturate(180%);backdrop-filter:blur(30px) saturate(180%);border-right:1px solid var(--line);padding:24px 14px 18px;flex-shrink:0;display:flex;flex-direction:column;transition:background .3s ease,border-color .3s ease;height:100vh;position:sticky;top:0;overflow-y:auto}
+.logo{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:700;letter-spacing:-0.02em;padding:0 10px 22px;color:var(--text)}
+.logo-mark{width:22px;height:22px;display:grid;grid-template-columns:repeat(2,1fr);gap:2px;padding:2px;flex-shrink:0;border-radius:5px;overflow:hidden}
+.logo-mark span{display:block;border-radius:1.5px}
+.logo-mark span:nth-child(1){background:#f25022}.logo-mark span:nth-child(2){background:#7fba00}.logo-mark span:nth-child(3){background:#00a4ef}.logo-mark span:nth-child(4){background:#ffb900}
+.nav-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);padding:0 10px;margin:16px 0 5px}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{width:100%;text-align:left;background:transparent;color:var(--text);border:0;border-radius:var(--radius-sm);padding:9px 10px;cursor:pointer;font:inherit;font-size:13px;font-weight:500;display:flex;align-items:center;gap:10px;transition:background .15s ease,color .15s ease,transform .15s var(--ease-out);position:relative}
+.nav button:hover{background:rgba(0,0,0,0.04)}
+@media(prefers-color-scheme:dark){.nav button:hover{background:rgba(255,255,255,0.06)}}
+.nav button:active{transform:scale(0.97)}
+.nav button.active{background:rgba(0,113,227,0.1);color:var(--accent);font-weight:600}
+@media(prefers-color-scheme:dark){.nav button.active{background:rgba(10,132,255,0.15)}}
+.nav button.active::before{content:"";position:absolute;left:0;top:6px;bottom:6px;width:3px;background:var(--accent);border-radius:0 3px 3px 0}
+.sidebar-foot{margin-top:auto;color:var(--muted);font-size:11px;padding:16px 10px 0;border-top:1px solid var(--line)}
+
+/* Main */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;transition:background .3s ease}
+.topbar{height:48px;background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 28px;position:sticky;top:0;z-index:10;transition:background .3s ease,border-color .3s ease}
+.topbar h1{font-size:14px;font-weight:600;letter-spacing:-0.01em;color:var(--text)}
+.topbar-right{display:flex;align-items:center;gap:10px;font-size:12px}
+.status-dot{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block}
+
+/* Content */
+.content{padding:28px;max-width:1200px;flex:1;margin:0 auto;width:100%}
+
+/* Stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px}
+.stat{background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow-sm);transition:transform .25s var(--ease-out),box-shadow .25s ease,background .3s ease,border-color .3s ease;animation:slideUp .4s var(--ease-out) both}
+.stat:nth-child(2){animation-delay:.05s}.stat:nth-child(3){animation-delay:.1s}.stat:nth-child(4){animation-delay:.15s}
+.stat:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+.stat-label{color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
+.stat-value{display:block;font-size:26px;font-weight:700;letter-spacing:-0.01em;margin-top:6px;color:var(--text);font-variant-numeric:tabular-nums;padding-right:2px}
+.stat-value small{font-size:12px;color:var(--muted);margin-left:4px;font-weight:500}
+.stat-unit{font-size:11px;color:var(--muted);margin-left:3px;font-weight:500;letter-spacing:0.02em}
+.stat-sub{margin-top:4px;font-size:11px;font-weight:500;color:var(--green)}
+
+/* Card */
+.card{background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);overflow:hidden;transition:background .3s ease,border-color .3s ease}
+.card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--line)}
+.card-title{font-size:13px;font-weight:600;letter-spacing:-0.01em}
+.card-body{padding:18px}
+
+/* Page heading (sections) */
+.page-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:16px}
+.page-title{font-size:20px;font-weight:750;letter-spacing:-0.02em;color:var(--text)}
+.page-sub{font-size:12px;color:var(--muted);margin-top:3px}
+
+/* Quick Actions */
+.quick-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.quick-action{display:flex;align-items:center;gap:12px;padding:14px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);cursor:pointer;transition:all .2s var(--ease-out);text-decoration:none;color:inherit}
+.quick-action:hover{border-color:var(--accent);box-shadow:var(--shadow-sm);transform:translateY(-2px)}
+.quick-action:active{transform:scale(0.97)}
+.quick-action-icon{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;flex-shrink:0}
+.quick-action-icon.blue{background:rgba(0,113,227,0.1);color:var(--accent)}
+.quick-action-icon.green{background:rgba(52,199,89,0.1);color:var(--green)}
+.quick-action-icon.purple{background:rgba(191,90,242,0.1);color:var(--purple)}
+.quick-action-text h4{font-size:13px;font-weight:600;margin-bottom:2px}
+.quick-action-text p{font-size:11px;color:var(--muted)}
+
+/* Forms */
+.form-group{margin-bottom:18px}
+.form-group:last-child{margin-bottom:0}
+.form-label{display:block;font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text)}
+.form-input{width:100%;border:1.5px solid var(--line);border-radius:var(--radius-sm);padding:9px 12px;outline:0;font:inherit;font-size:13px;background:rgba(255,255,255,0.5);color:var(--text);transition:border-color .15s ease,box-shadow .15s ease,background .15s ease}
+@media(prefers-color-scheme:dark){.form-input{background:rgba(0,0,0,0.2)}}
+.form-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,113,227,0.12);background:rgba(255,255,255,0.7)}
+@media(prefers-color-scheme:dark){.form-input:focus{background:rgba(0,0,0,0.3);box-shadow:0 0 0 3px rgba(10,132,255,0.15)}}
+.form-input::placeholder{color:var(--muted)}
+.form-hint{font-size:12px;color:var(--muted);margin-top:5px;line-height:1.5}
+.form-hint code{color:var(--text);background:var(--line);padding:1px 5px;border-radius:4px;font-size:12px}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--line);background:var(--surface);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--text);border-radius:var(--radius-sm);padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600;font-family:inherit;letter-spacing:-0.01em;transition:all .15s var(--ease-out);min-height:34px;white-space:nowrap;user-select:none}
+.btn:hover{background:var(--surface-solid);border-color:var(--line-strong)}
+.btn:active{transform:scale(0.97)}
+.btn:disabled{cursor:not-allowed;opacity:0.5;transform:none}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:var(--bg)}
+.btn.primary:hover{background:var(--primary-hover);border-color:var(--primary-hover);box-shadow:var(--shadow-sm)}
+.btn.danger{color:var(--red);border-color:var(--line)}
+.btn.danger:hover{background:rgba(255,59,48,0.06);border-color:var(--red)}
+.btn.success{color:var(--green);border-color:var(--line)}
+.btn.success:hover{background:rgba(52,199,89,0.06);border-color:var(--green)}
+.btn-sm{padding:5px 10px;min-height:28px;font-size:11px}
+
+/* Table */
+.table{width:100%;border-collapse:collapse}
+.table th{text-align:left;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;background:transparent;border-bottom:1px solid var(--line);padding:10px 18px}
+.table td{padding:12px 18px;border-bottom:1px solid var(--line);white-space:nowrap;font-size:13px}
+.table tr:hover td{background:rgba(0,113,227,0.03)}
+@media(prefers-color-scheme:dark){.table tr:hover td{background:rgba(10,132,255,0.04)}}
+.table tr:last-child td{border-bottom:0}
+.conv-row{cursor:pointer}
+.conv-link{display:block;max-width:360px;padding:0;border:0;background:transparent;color:var(--accent);font:inherit;font-weight:600;text-align:left;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
+.conv-meta{font-size:11px;color:var(--muted);margin-top:3px}
+
+/* Notice */
+.notice{position:fixed;right:24px;bottom:24px;background:var(--primary);color:var(--bg);padding:12px 18px;border-radius:var(--radius-sm);display:none;box-shadow:var(--shadow-lg);font-weight:600;font-size:13px;z-index:99;animation:slideUp .3s var(--ease-out)}
+.notice.show{display:block}
+.notice.success{background:var(--green)}
+.notice.error{background:var(--red)}
+
+/* Account cell */
+.account-cell{display:flex;align-items:center;gap:10px}
+.avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),#5856d6);color:#fff;display:grid;place-items:center;font-weight:600;font-size:11px}
+
+/* Status */
+.status{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600}
+.status i{width:6px;height:6px;border-radius:50%;background:currentColor}
+.status.online{color:var(--green)}
+.status.offline{color:var(--muted)}
+.status.cooldown{color:#d97706}
+.status.warn{color:#d97706}
+
+/* Empty */
+.empty{text-align:center;padding:40px 20px;color:var(--muted);font-size:13px;background:transparent}
+
+/* Highlight box */
+.highlight-box{background:rgba(0,113,227,0.04);border:1px solid rgba(0,113,227,0.15);border-radius:var(--radius-sm);padding:14px 16px;margin:12px 0;animation:scaleIn .3s var(--ease-out)}
+.highlight-box.warning{background:rgba(255,159,10,0.04);border-color:rgba(255,159,10,0.2)}
+.highlight-box.success{background:rgba(52,199,89,0.04);border-color:rgba(52,199,89,0.2)}
+.highlight-box-title{font-size:12px;font-weight:600;color:var(--accent);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.highlight-box.warning .highlight-box-title{color:var(--orange)}
+.highlight-box.success .highlight-box-title{color:var(--green)}
+.highlight-box p{font-size:12px;color:var(--muted);line-height:1.5}
+.highlight-box p:last-child{margin-bottom:0}
+
+/* Onboarding */
+.onboarding{position:relative;overflow:hidden;border-radius:var(--radius);border:1px solid var(--line);background:var(--surface);-webkit-backdrop-filter:blur(24px) saturate(180%);backdrop-filter:blur(24px) saturate(180%);box-shadow:var(--shadow-sm);padding:24px;margin-bottom:24px;animation:slideUp .4s var(--ease-out)}
+.onboarding::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 60% 130% at 88% 0%,rgba(0,113,227,0.12) 0%,transparent 62%),linear-gradient(112deg,rgba(0,113,227,0.04) 0%,rgba(88,86,214,0.04) 48%,rgba(0,113,227,0.06) 100%);pointer-events:none}
+@media(prefers-color-scheme:dark){.onboarding::before{background:radial-gradient(ellipse 60% 130% at 88% 0%,rgba(10,132,255,0.18) 0%,transparent 62%),linear-gradient(112deg,rgba(10,132,255,0.05) 0%,rgba(94,92,230,0.05) 48%,rgba(10,132,255,0.07) 100%)}}
+.onboarding-deco{position:absolute;right:-6px;top:12px;font-family:SF Mono,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;color:var(--muted);opacity:.34;pointer-events:none;white-space:pre;text-align:right;-webkit-mask-image:linear-gradient(90deg,transparent 0%,#000 30%,#000 82%,transparent 100%);mask-image:linear-gradient(90deg,transparent 0%,#000 30%,#000 82%,transparent 100%);user-select:none}
+.onb-grid{position:relative;display:grid;gap:20px;grid-template-columns:minmax(0,1fr) minmax(0,21rem)}
+@media(max-width:900px){.onb-grid{grid-template-columns:1fr}}
+.onb-header{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:16px}
+.onb-kicker{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.onb-kicker i{width:14px;height:14px}
+.onb-title{font-size:20px;font-weight:700;letter-spacing:-.02em;margin-top:5px}
+.onb-desc{font-size:12px;color:var(--muted);margin-top:4px;max-width:520px;line-height:1.5}
+.onb-head-actions{display:flex;gap:8px;flex-wrap:wrap}
+.onb-steps{display:flex;flex-direction:column;gap:8px;background:rgba(255,255,255,.45);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px}
+@media(prefers-color-scheme:dark){.onb-steps{background:rgba(0,0,0,.28)}}
+.onb-step{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:var(--radius-sm);background:rgba(255,255,255,.55);border:1px solid var(--line);cursor:pointer;transition:border-color .2s var(--ease-out),box-shadow .2s var(--ease-out),transform .2s var(--ease-out);text-align:left;color:inherit;font:inherit}
+@media(prefers-color-scheme:dark){.onb-step{background:rgba(0,0,0,.25)}}
+.onb-step:hover{border-color:var(--accent);box-shadow:var(--shadow-sm);transform:translateX(2px)}
+.onb-step:active{transform:scale(.98)}
+.onb-step-num{flex-shrink:0;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;font-weight:700;font-size:13px;font-variant-numeric:tabular-nums;background:rgba(0,113,227,.1);color:var(--accent)}
+@media(prefers-color-scheme:dark){.onb-step-num{background:rgba(10,132,255,.16)}}
+.onb-step.done .onb-step-num{background:rgba(52,199,89,.12);color:var(--green)}
+.onb-step-icon{flex-shrink:0;width:32px;height:32px;border-radius:10px;display:grid;place-items:center;background:var(--line);color:var(--muted)}
+.onb-step-text{flex:1;min-width:0}
+.onb-step-text b{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
+.onb-step-text b i{width:14px;height:14px}
+.onb-step-text p{font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.onb-step-arrow{flex-shrink:0;width:16px;height:16px;color:var(--muted)}
+/* Onboarding code panel */
+.onb-code{background:rgba(255,255,255,.6);border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;padding:14px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+@media(prefers-color-scheme:dark){.onb-code{background:rgba(0,0,0,.3)}}
+.onb-code-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.onb-code-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600}
+.onb-code-title i{flex-shrink:0;width:16px;height:16px;color:var(--accent)}
+.onb-code-title small{color:var(--muted);font-weight:500;font-size:11px}
+.onb-mac{display:flex;gap:6px;margin-bottom:10px}
+.onb-mac i{width:10px;height:10px;border-radius:50%;display:block}
+.onb-mac i:nth-child(1){background:var(--red)}.onb-mac i:nth-child(2){background:var(--orange)}.onb-mac i:nth-child(3){background:var(--green)}
+.onb-curl{margin:0;font-family:SF Mono,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;color:var(--muted);max-height:180px;overflow:auto}
+.onb-curl .hl{color:var(--accent)}
+.onb-status{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.onb-status-row{display:flex;align-items:center;justify-content:space-between;gap:12px;background:rgba(0,0,0,.03);border-radius:var(--radius-sm);padding:9px 12px;font-size:12px}
+@media(prefers-color-scheme:dark){.onb-status-row{background:rgba(255,255,255,.05)}}
+.onb-status-l{display:flex;align-items:center;gap:8px;min-width:0}
+.onb-status-l i{flex-shrink:0;width:14px;height:14px}
+.onb-status-r{flex-shrink:0;color:var(--muted);font-size:11px;font-weight:500}
+
+/* Copy field */
+.copy-field{display:flex;gap:8px;align-items:center;margin:8px 0}
+.copy-field .form-input{flex:1;font-family:SF Mono,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.3);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;z-index:50}
+.modal-overlay.open{display:flex}
+.modal{width:min(480px,calc(100vw - 32px));background:var(--surface-solid);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius);box-shadow:var(--shadow-lg);padding:28px;animation:scaleIn .25s var(--ease-out)}
+.modal h3{font-size:17px;font-weight:700;letter-spacing:-0.01em;margin-bottom:4px}
+.modal .subtitle{font-size:12px;color:var(--muted);margin-bottom:16px}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.modal-close{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s var(--ease-out)}
+.modal-close:hover{background:var(--hover);color:var(--text)}
+
+/* macOS terminal */
+.term{background:#1a1d24;border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow-md);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.term-head{display:flex;align-items:center;gap:6px;padding:10px 14px;background:rgba(255,255,255,0.04);border-bottom:1px solid rgba(255,255,255,0.06)}
+.term-dot{width:11px;height:11px;border-radius:50%;flex-shrink:0}
+.term-dot.red{background:#ff5f57}.term-dot.yellow{background:#febc2e}.term-dot.green{background:#28c840}
+.term-title{flex:1;text-align:center;font-size:11px;color:var(--muted);letter-spacing:0.02em}
+.term-clear{border:0;background:transparent;color:var(--muted);font-size:11px;cursor:pointer;font-family:inherit}
+.term-clear:hover{color:var(--text)}
+.term-body{height:260px;overflow-y:auto;padding:12px 14px;font-size:12px;line-height:1.75;color:#d1d5db}
+.term-body div{white-space:pre-wrap;word-break:break-all}
+.term-body .ok{color:#4ade80}.term-body .err{color:#f87171}.term-body .warn{color:#fbbf24}.term-body .dim{color:#6b7280}
+.term-body::-webkit-scrollbar{width:8px}.term-body::-webkit-scrollbar-thumb{background:#3b4152;border-radius:4px}
+
+/* Responsive */
+@media(max-width:900px){.stats{grid-template-columns:repeat(2,1fr)}.quick-grid{grid-template-columns:1fr}}
+@media(max-width:640px){.sidebar{width:48px;padding:16px 4px}.logo span,.nav-label,.nav button span,.sidebar-foot{display:none}.logo{padding-bottom:16px;justify-content:center}.nav button{padding:8px 0;justify-content:center}.topbar{padding:0 14px}.content{padding:16px}.stats{grid-template-columns:1fr}.topbar-right{display:none}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}}
+
+/* Usage overview card (dashboard) */
+.usage-overview{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:24px;box-shadow:var(--shadow-sm)}
+.usage-overview-item{background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);padding:16px 20px;transition:background .3s ease;animation:slideUp .4s var(--ease-out) both}
+.usage-overview-item:nth-child(2){animation-delay:.05s}.usage-overview-item:nth-child(3){animation-delay:.1s}
+.usage-overview-top{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em}
+.usage-overview-top i{width:14px;height:14px}
+.usage-overview-value{display:block;font-size:24px;font-weight:700;letter-spacing:-0.03em;margin-top:6px;color:var(--text);font-variant-numeric:tabular-nums}
+.usage-overview-value small{font-size:12px;color:var(--muted);font-weight:500;margin-left:3px}
+.usage-overview-sub{margin-top:3px;font-size:11px;color:var(--muted)}
+
+/* Usage page */
+.usage-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:3px;gap:2px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.seg button{border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;padding:5px 12px;border-radius:7px;cursor:pointer;transition:all .15s var(--ease-out)}
+.seg button:hover{color:var(--text)}
+.seg button.active{background:var(--primary);color:var(--bg)}
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+@media(max-width:900px){.chart-grid{grid-template-columns:1fr}}
+.chart{background:var(--surface);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-sm);padding:16px 18px;animation:slideUp .4s var(--ease-out) both}
+.chart-title{font-size:13px;font-weight:600;margin-bottom:2px}
+.chart-sub{font-size:11px;color:var(--muted);margin-bottom:12px}
+.chart svg{display:block;width:100%;height:auto}
+.chart-tooltip{position:absolute;background:var(--primary);color:var(--bg);font-size:11px;font-weight:600;padding:4px 8px;border-radius:6px;pointer-events:none;opacity:0;transition:opacity .1s ease;z-index:5;white-space:nowrap;box-shadow:var(--shadow-sm)}
+.bar-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.bar-row:last-child{margin-bottom:0}
+.bar-name{width:110px;flex-shrink:0;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-track{flex:1;height:14px;background:var(--line);border-radius:7px;overflow:hidden}
+.bar-fill{height:100%;border-radius:7px;background:linear-gradient(90deg,var(--accent),#5856d6);transition:width .5s var(--ease-out)}
+.bar-val{width:90px;flex-shrink:0;text-align:right;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.bar-fill.green{background:linear-gradient(90deg,#34c759,#30d158)}
+.bar-fill.orange{background:linear-gradient(90deg,#ff9f0a,#ffb340)}
+.bar-fill.purple{background:linear-gradient(90deg,#bf5af2,#d391f7)}
+.bar-fill.red{background:linear-gradient(90deg,#ff3b30,#ff6961)}
+.bar-fill.teal{background:linear-gradient(90deg,#30b0c7,#5ac8fa)}
+.bar-fill.pink{background:linear-gradient(90deg,#ff2d55,#ff6482)}
+.chart-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:120px;color:var(--muted);font-size:12px}
+.chart-empty i{width:28px;height:28px;color:var(--muted);opacity:.5}
+.pagination{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
+.usage-status{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(52,199,89,.12);color:var(--green)}
+.usage-status.err{background:rgba(255,59,48,.1);color:var(--red)}
+.usage-status.partial{background:rgba(255,149,0,.12);color:#d97706}
+.usage-status.recovered{background:rgba(0,122,255,.12);color:var(--accent)}
+.usage-status.unknown{background:var(--line);color:var(--muted)}
+.usage-status.unknown{background:var(--line);color:var(--muted)}
+.token-stack{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.token-stack b{color:var(--text);font-weight:600}
+.usage-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+.usage-stat-sub{display:block;color:var(--muted)}
+.usage-estimate-note{display:flex;align-items:center;gap:6px;margin:0 0 14px;color:var(--muted);font-size:11px}
+.usage-estimate-note i,.usage-estimate-note svg{width:13px;height:13px;flex-shrink:0}
+.usage-table-wrap{overflow-x:auto}
+.usage-log-table{min-width:1120px}
+.usage-log-table th,.usage-log-table td{padding-left:12px;padding-right:12px;vertical-align:top}
+.usage-cell-primary{display:block;font-size:12px;color:var(--text);font-weight:600;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere}
+.usage-cell-secondary{display:block;max-width:220px;margin-top:3px;color:var(--muted);font-size:10px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
+.usage-id{display:block;max-width:175px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--text)}
+.usage-error-cell{max-width:240px;white-space:normal!important}
+.usage-error-type{color:var(--red)}
+.usage-error-message{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+@media(max-width:900px){.usage-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){
+  .usage-table-wrap{overflow:visible}
+  .usage-log-table,.usage-log-table tbody{display:block;width:100%;min-width:0}
+  .usage-log-table thead{display:none}
+  .usage-log-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .usage-log-table tr:last-child{border-bottom:0}
+  .usage-log-table td{display:block;min-width:0;padding:0;border:0;white-space:normal}
+  .usage-log-table td::before{content:attr(data-label);display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+  .usage-log-table td[data-wide="true"]{grid-column:1/-1}
+  .usage-log-table td.empty{grid-column:1/-1;padding:28px 12px}
+  .usage-log-table td.empty::before{display:none}
+  .usage-log-table tr:hover td{background:transparent}
+  .usage-log-table .usage-id{max-width:none;white-space:normal;overflow-wrap:anywhere}
+  .usage-log-table .usage-cell-secondary{max-width:none}
+  .usage-log-table .usage-error-message{-webkit-line-clamp:3}
+}
+@media(max-width:640px){
+  .usage-stats{grid-template-columns:1fr}
+  .pagination{justify-content:flex-start;flex-wrap:wrap;padding:10px 12px}
+  .pagination>span{flex:1 0 100%;min-width:0;text-align:center;overflow-wrap:anywhere}
+  .pagination>.btn{flex:1 1 0;min-width:0}
+}
+
+/* Use Key modal tabs */
+.uke-tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.uke-tab{background:transparent;border:0;border-bottom:2px solid transparent;padding:8px 12px;font:inherit;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;transition:color .15s ease,border-color .15s ease;display:inline-flex;align-items:center;gap:6px}
+.uke-tab i{width:14px;height:14px}
+.uke-tab:hover{color:var(--text)}
+.uke-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.uke-file{background:rgba(0,0,0,.03);border:1px solid var(--line);border-radius:var(--radius-sm);margin-bottom:10px;overflow:hidden}
+@media(prefers-color-scheme:dark){.uke-file{background:rgba(255,255,255,.04)}}
+.uke-file-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:11px;font-weight:600;color:var(--muted)}
+.uke-file-head code{font-family:SF Mono,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:var(--text)}
+.uke-file pre{margin:0;padding:12px;font-family:SF Mono,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.65;white-space:pre-wrap;word-break:break-all;color:var(--text);max-height:240px;overflow:auto}
+.uke-file pre .c{color:var(--muted)}
+.modal.wide{width:min(720px,calc(100vw - 32px))}
+</style>
+</head>
+<body>
+
+<!-- Login -->
+<div id="login" style="min-height:100vh;display:grid;place-items:center">
+  <div style="width:min(400px,calc(100vw - 32px));animation:scaleIn .5s var(--ease-out)">
+    <div style="text-align:center;margin-bottom:24px">
+      <div class="logo" style="display:flex;align-items:center;gap:10px;justify-content:center;margin:0 auto 12px;padding:0"><div class="logo-mark" style="width:32px;height:32px"><span></span><span></span><span></span><span></span></div><span style="font-size:24px;font-weight:700;letter-spacing:-0.02em">M365 Copilot2API</span></div>
+      <p style="color:var(--muted);font-size:14px;margin-top:4px">Administrator Login</p>
+    </div>
+    <form id="loginForm" style="background:var(--surface);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius);padding:32px;box-shadow:var(--shadow-lg)">
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" id="loginPassword" type="password" placeholder="请输入管理员密码" autofocus>
+        <div class="form-hint" style="margin-top:4px">管理员密码由部署者配置；未配置时管理端不可用。</div>
+      </div>
+      <button type="submit" class="btn primary" style="width:100%;margin-top:8px">Log in</button>
+    </form>
+  </div>
+</div>
+
+<!-- App -->
+<div class="app" id="app" style="display:none">
+  <aside class="sidebar">
+    <div class="logo"><div class="logo-mark"><span></span><span></span><span></span><span></span></div><span>M365 Copilot2API</span></div>
+    <div class="nav-label">Overview</div>
+    <nav class="nav">
+      <button class="active" data-page="dashboard" onclick="showPage('dashboard')"><i data-lucide="layout-dashboard" style="width:16px;height:16px;flex-shrink:0"></i><span>Dashboard</span></button>
+      <button data-page="usage" onclick="showPage('usage')"><i data-lucide="chart-line" style="width:16px;height:16px;flex-shrink:0"></i><span>Usage</span></button>
+    </nav>
+    <div class="nav-label">Management</div>
+    <nav class="nav">
+      <button data-page="accounts" onclick="showPage('accounts')"><i data-lucide="users" style="width:16px;height:16px;flex-shrink:0"></i><span>Accounts</span></button>
+      <button data-page="apikeys" onclick="showPage('apikeys')"><i data-lucide="key-round" style="width:16px;height:16px;flex-shrink:0"></i><span>API Keys</span></button>
+      <button data-page="conversations" onclick="showPage('conversations')"><i data-lucide="message-square" style="width:16px;height:16px;flex-shrink:0"></i><span>Conversations</span></button>
+    </nav>
+    <div class="nav-label">System</div>
+    <nav class="nav">
+      <button data-page="proxies" onclick="showPage('proxies')"><i data-lucide="globe" style="width:16px;height:16px;flex-shrink:0"></i><span>Proxy Pool</span></button>
+      <button data-page="modeltest" onclick="showPage('modeltest')"><i data-lucide="flask-conical" style="width:16px;height:16px;flex-shrink:0"></i><span>Model Test</span></button>
+      <button data-page="settings" onclick="showPage('settings')"><i data-lucide="settings" style="width:16px;height:16px;flex-shrink:0"></i><span>Settings</span></button>
+    </nav>
+    <div class="sidebar-foot">v0.4.0</div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1 id="pageTitle">Dashboard</h1>
+      <div class="topbar-right">
+        <span style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:5px"><span class="status-dot"></span> Running</span>
+        <button class="btn" onclick="logout()">Log out</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <!-- Dashboard -->
+      <section id="page-dashboard">
+        <div class="onboarding" id="onboarding">
+          <div class="onboarding-deco" aria-hidden="true">const response = await client.responses.create({
+  model: 'auto',
+  input: 'Say hello',
+})
+
+if (response.output_text) {
+  console.log(response.output_text)
+}</div>
+          <div class="onb-header">
+            <div>
+              <div class="onb-kicker"><i data-lucide="list-checks"></i> Getting Started</div>
+              <h2 class="onb-title">Start using your API gateway in a few steps</h2>
+              <p class="onb-desc">Add a Microsoft account and create an API key to chat through the OpenAI-compatible API.</p>
+            </div>
+            <div class="onb-head-actions">
+              <button class="btn" onclick="toggleOnboarding()"><i data-lucide="chevron-up" style="width:14px;height:14px"></i> Hide guide</button>
+            </div>
+          </div>
+          <div class="onb-grid">
+            <div class="onb-steps">
+              <button class="onb-step" id="onb-s1" onclick="onbStep1()">
+                <span class="onb-step-num" id="onb-n1">1</span>
+                <span class="onb-step-icon"><i data-lucide="user-plus" style="width:15px;height:15px"></i></span>
+                <span class="onb-step-text"><b>Add a Microsoft account</b><p>Sign in via browser OAuth and add the account to the pool</p></span>
+                <svg class="onb-step-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              </button>
+              <button class="onb-step" id="step-s2" onclick="onbStep2()">
+                <span class="onb-step-num" id="onb-n2">2</span>
+                <span class="onb-step-icon"><i data-lucide="key-round" style="width:15px;height:15px"></i></span>
+                <span class="onb-step-text"><b>Create an API key</b><p>Generate a key to authenticate API requests</p></span>
+                <svg class="onb-step-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              </button>
+              <button class="onb-step" id="step-s3" onclick="onbStep3()">
+                <span class="onb-step-num" id="onb-n3">3</span>
+                <span class="onb-step-icon"><i data-lucide="terminal" style="width:15px;height:15px"></i></span>
+                <span class="onb-step-text"><b>Send a request</b><p>Verify the route with the curl example below</p></span>
+                <svg class="onb-step-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+              </button>
+            </div>
+            <div class="onb-code">
+              <div class="onb-code-head">
+                <div class="onb-code-title"><i data-lucide="square-terminal"></i> First API request<small>OpenAI-compatible API</small></div>
+                <button class="btn btn-sm" onclick="copyCurl()"><i data-lucide="copy" style="width:13px;height:13px"></i> Copy</button>
+              </div>
+              <div class="onb-mac" aria-hidden="true"><i></i><i></i><i></i></div>
+              <pre class="onb-curl" id="onbCurl"></pre>
+              <div class="onb-status">
+                <div class="onb-status-row"><span class="onb-status-l"><i data-lucide="radio-tower" style="color:var(--green)"></i> Gateway</span><span class="onb-status-r">Online</span></div>
+                <div class="onb-status-row"><span class="onb-status-l"><i data-lucide="users" style="color:var(--accent)"></i> Available accounts</span><span class="onb-status-r" id="onbStatusAcc">0</span></div>
+                <div class="onb-status-row"><span class="onb-status-l"><i data-lucide="key-round" style="color:var(--purple)"></i> API Key</span><span class="onb-status-r" id="onbStatusKey">0</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="usage-overview">
+          <div class="usage-overview-item">
+            <div class="usage-overview-top"><i data-lucide="flame"></i> Last 24 hours</div>
+            <span class="usage-overview-value" id="ov24hTok">0<small>Tokens (est.)</small></span>
+            <span class="usage-overview-sub" id="ov24hReq">0 requests</span>
+          </div>
+          <div class="usage-overview-item">
+            <div class="usage-overview-top"><i data-lucide="trending-up"></i> All-time usage</div>
+            <span class="usage-overview-value" id="ovTotalTok">0<small>Tokens (est.)</small></span>
+            <span class="usage-overview-sub" id="ovTotalReq">0 requests</span>
+          </div>
+          <div class="usage-overview-item">
+            <div class="usage-overview-top"><i data-lucide="activity"></i> Request count</div>
+            <span class="usage-overview-value" id="ovTodayTok">0<small>Tokens (est.)</small></span>
+            <span class="usage-overview-sub" id="ovTodayReq">0 requests today</span>
+          </div>
+          <div class="usage-overview-item">
+            <div class="usage-overview-top"><i data-lucide="piggy-bank"></i> Cache hits</div>
+            <span class="usage-overview-value" id="ovCacheHits">0<small>Tokens (est.)</small></span>
+            <span class="usage-overview-sub" id="ovCacheRate">Hit rate 0%</span>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat"><span class="stat-label">Total sessions</span><span class="stat-value" id="stat-sessions">0</span><span class="stat-unit">total</span></div>
+          <div class="stat"><span class="stat-label">Cache hits</span><span class="stat-value" id="stat-hits">0</span><span class="stat-unit">hits</span></div>
+          <div class="stat"><span class="stat-label">Hit rate</span><span class="stat-value" id="stat-rate">0</span><span class="stat-unit">%</span></div>
+          <div class="stat"><span class="stat-label">Tokens saved</span><span class="stat-value" id="stat-saved">0</span><span class="stat-unit" style="font-size:12px">saved</span></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Quick actions</span></div>
+          <div class="card-body">
+            <div class="quick-grid">
+              <div class="quick-action" onclick="showPage('accounts');setTimeout(startPKCE,200)">
+                <div class="quick-action-icon blue"><i data-lucide="plus" style="width:18px;height:18px"></i></div>
+                <div class="quick-action-text"><h4>Add account</h4><p>Sign in via Microsoft OAuth</p></div>
+              </div>
+              <div class="quick-action" onclick="openKeyModal()">
+                <div class="quick-action-icon green"><i data-lucide="key" style="width:18px;height:18px"></i></div>
+                <div class="quick-action-text"><h4>Create API key</h4><p>Generate a key for API access</p></div>
+              </div>
+              <div class="quick-action" onclick="showPage('conversations')">
+                <div class="quick-action-icon purple"><i data-lucide="trash-2" style="width:18px;height:18px"></i></div>
+                <div class="quick-action-text"><h4>Clean conversations</h4><p>Delete conversations you no longer need</p></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Recent requests</span><button class="btn btn-sm" onclick="showPage('usage')">View all</button></div>
+          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Endpoint</th><th>Tokens (est.)</th><th>Status</th></tr></thead><tbody id="dashRecentRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
+        </div>
+      </section>
+
+      <!-- Usage -->
+      <section id="page-usage" style="display:none">
+        <div class="page-head">
+          <div><h2 class="page-title">Usage</h2><p class="page-sub">Estimated token usage and request performance</p></div>
+          <div class="seg" id="usageRange">
+            <button data-days="1" onclick="setUsageRange(1)">24h</button>
+            <button data-days="7" class="active" onclick="setUsageRange(7)">7 days</button>
+            <button data-days="30" onclick="setUsageRange(30)">30 days</button>
+            <button data-days="90" onclick="setUsageRange(90)">90 days</button>
+          </div>
+        </div>
+        <div class="usage-estimate-note"><i data-lucide="info"></i><span><span>Gateway estimates only; Microsoft does not return billing token counts.</span> <span>History tokens are shown separately and excluded from totals.</span></span></div>
+        <div class="stats usage-stats">
+          <div class="stat"><span class="stat-label">Total requests</span><span class="stat-value" id="ug-req">0</span><span class="stat-sub" id="ug-req-sub"></span></div>
+          <div class="stat"><span class="stat-label">Estimated tokens</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub usage-stat-sub" id="ug-tok-sub"></span></div>
+          <div class="stat"><span class="stat-label">Success rate</span><span class="stat-value" id="ug-success">0%</span><span class="stat-sub usage-stat-sub" id="ug-success-sub"></span></div>
+          <div class="stat"><span class="stat-label">Average TTFT</span><span class="stat-value" id="ug-ttft">0</span><span class="stat-unit">ms</span><span class="stat-sub usage-stat-sub" id="ug-ttft-sub"></span></div>
+          <div class="stat"><span class="stat-label">P95 latency</span><span class="stat-value" id="ug-p95">0</span><span class="stat-unit">ms</span><span class="stat-sub usage-stat-sub" id="ug-p95-sub"></span></div>
+          <div class="stat"><span class="stat-label">Average latency</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
+        </div>
+        <div class="chart-grid">
+          <div class="chart">
+            <div class="chart-title">Estimated token usage trend</div>
+            <div class="chart-sub">Estimated daily token consumption</div>
+            <div id="ugTrendWrap"><svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"></svg></div>
+          </div>
+          <div class="chart">
+            <div class="chart-title">Model distribution</div>
+            <div class="chart-sub">Estimated token usage by model</div>
+            <div id="ugModels"></div>
+          </div>
+          <div class="chart">
+            <div class="chart-title">Endpoint distribution</div>
+            <div class="chart-sub">Requests by endpoint</div>
+            <div id="ugEndpoints"></div>
+          </div>
+          <div class="chart">
+            <div class="chart-title">API key usage</div>
+            <div class="chart-sub">Requests by API key</div>
+            <div id="ugKeys"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Request details</span><span style="font-size:11px;color:var(--muted)">Recent records</span></div>
+          <div class="usage-table-wrap">
+            <table class="table usage-log-table"><thead><tr><th>Time</th><th>IP</th><th>Request ID</th><th>Model / Endpoint</th><th>Status</th><th>TTFT / Total</th><th>Tokens (est.)</th><th>Retries / Tools</th><th>Error</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody></table>
+          </div>
+          <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" onclick="ugPage(-1)">Previous</button><button class="btn btn-sm" id="ugNext" onclick="ugPage(1)">Next</button></div>
+        </div>
+      </section>
+
+      <!-- Accounts -->
+      <section id="page-accounts" style="display:none">
+        <div class="page-head">
+          <div><h2 class="page-title">Account management</h2><p class="page-sub">Authorize and manage Microsoft accounts</p></div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head"><span class="card-title">Add account</span></div>
+          <div class="card-body">
+            <div class="onb-steps" style="margin-bottom:16px">
+              <div class="onb-step">
+                <span class="onb-step-num">1</span>
+                <span class="onb-step-icon"><i data-lucide="mouse-pointer-click" style="width:15px;height:15px"></i></span>
+                <span class="onb-step-text"><b>点击下方"开始授权"</b><p>弹出窗口将打开 Microsoft 登录页面，完成登录后返回此页面。</p></span>
+              </div>
+              <div class="onb-step">
+                <span class="onb-step-num">2</span>
+                <span class="onb-step-icon"><i data-lucide="clipboard-copy" style="width:15px;height:15px"></i></span>
+                <span class="onb-step-text"><b>复制弹出页地址栏中的回调地址</b><p>登录后弹出页会显示空白或错误——这是正常的。复制<b>弹出页地址栏</b>的完整网址（包含 <code>code=...</code> 和 <code>state=...</code>）。</p></span>
+              </div>
+              <div class="onb-step">
+                <span class="onb-step-num">3</span>
+                <span class="onb-step-icon"><i data-lucide="check-check" style="width:15px;height:15px"></i></span>
+                <span class="onb-step-text"><b>粘贴并确认</b><p>粘贴到下方"回调地址"输入框，点击"确认添加"完成授权</p></span>
+              </div>
+            </div>
+            <button class="btn primary" onclick="startPKCE()" style="width:100%;margin-bottom:12px;"><i data-lucide="link" style="width:15px;height:15px"></i> Start authorization</button>
+            <div class="highlight-box warning" style="margin-top:0;margin-bottom:16px">
+              <div class="highlight-box-title"><i data-lucide="alert-circle" style="width:14px;height:14px"></i> 必须手动粘贴回调地址以完成授权</div>
+              <p>在弹出窗口中登录后，页面会显示空白或错误——<strong>这是正常的</strong>，因为回调端点不是真正的网站。授权<strong>尚未</strong>完成。复制弹出页地址栏中的<strong>完整网址</strong>（形如 <code>http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123</code>），粘贴到下方"回调地址"输入框。</p>
+            </div>
+            <label class="form-label">Callback URL</label>
+            <div class="copy-field">
+              <input class="form-input" id="callbackInput" placeholder="Paste the full callback URL, e.g. http://localhost:4141/api/auth/callback?code=M.C5...&state=abc123" autocomplete="off">
+              <button class="btn primary" onclick="submitCallback()" style="min-width:96px">Confirm and add</button>
+            </div>
+            <div id="authStatus" style="margin-top:12px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head">
+            <span class="card-title">Authorized accounts</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input class="form-input" id="accountSearch" placeholder="Search accounts…" style="width:180px;padding:6px 10px;font-size:12px" oninput="renderAccounts()">
+              <div class="seg" id="accountFilter">
+                <button data-f="all" class="active" onclick="setAccountFilter('all')">All</button>
+                <button data-f="online" onclick="setAccountFilter('online')">Online</button>
+                <button data-f="cooldown" onclick="setAccountFilter('cooldown')">Cooldown</button>
+                <button data-f="offline" onclick="setAccountFilter('offline')">Offline</button>
+              </div>
+            </div>
+          </div>
+          <table class="table"><thead><tr><th>Account</th><th>Calls</th><th>Status</th><th>Updated</th><th>Scheduling</th><th>Proxy</th><th>Actions</th></tr></thead><tbody id="accountRows"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody></table>
+        </div>
+      </section>
+
+      <!-- API Keys -->
+      <section id="page-apikeys" style="display:none">
+        <div class="page-head">
+          <div><h2 class="page-title">API Keys</h2><p class="page-sub">Manage access keys</p></div>
+          <button class="btn primary" onclick="openKeyModal()">Create key</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Key list</span><span style="font-size:11px;color:var(--muted)">The full key is shown only once after creation</span></div>
+          <table class="table"><thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Status</th><th>Last used</th><th style="text-align:right">Actions</th></tr></thead><tbody id="keyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+        </div>
+      </section>
+
+      <!-- Conversations -->
+      <section id="page-conversations" style="display:none">
+        <div class="page-head">
+          <div><h2 class="page-title">Conversation management</h2><p class="page-sub">View and clean up M365 conversations</p></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn danger" onclick="cleanupAll()">Clean up all</button>
+          </div>
+        </div>
+        <div class="term" id="termBox" style="display:none;margin-bottom:16px">
+          <div class="term-head">
+            <span class="term-dot red"></span><span class="term-dot yellow"></span><span class="term-dot green"></span>
+            <span class="term-title" id="termTitle">cleanup — m365-copilot2api</span>
+            <button class="term-clear" onclick="termClear()">Clear</button>
+          </div>
+          <div class="term-body" id="termBody"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Conversation list</span></div>
+          <table class="table"><thead><tr><th>Name</th><th>Messages</th><th>Account</th><th>Last updated</th><th>Actions</th></tr></thead><tbody id="convRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
+        </div>
+      </section>
+
+      <!-- Proxies -->
+      <section id="page-proxies" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div><h2 style="font-size:18px;font-weight:700">Proxy pool</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Configure outbound proxies with http / https / socks5 and automatic failover</p></div>
+          <button class="btn" onclick="proxyCheckAll()"><i data-lucide="activity" style="width:14px;height:14px"></i> Check all</button>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head"><span class="card-title">Add proxy</span></div>
+          <div class="card-body">
+            <label class="form-label">Proxy URLs (one per line; bulk paste supported)</label>
+            <textarea class="form-input" id="proxyInput" rows="4" placeholder="http://proxy.example.com:8080&#10;socks5://127.0.0.1:1080&#10;https://proxy.example.com:443"></textarea>
+            <div style="margin-top:12px;display:flex;gap:8px">
+              <button class="btn primary" onclick="proxyAdd()"><i data-lucide="plus" style="width:14px;height:14px"></i> Add</button>
+              <button class="btn" onclick="proxyTest()">Test connectivity</button>
+            </div>
+            <p class="form-hint" style="margin-top:8px">Supported formats: <code>http://</code>, <code>https://</code>, and <code>socks5://</code>; usernames and passwords are supported</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">Proxy list</span></div>
+          <table class="table"><thead><tr><th>URL</th><th>Status</th><th>Latency</th><th>Failures</th><th>Cooldown until</th><th>Actions</th></tr></thead><tbody id="proxyRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+        </div>
+      </section>
+
+      <!-- Model Test -->
+      <section id="page-modeltest" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <div><h2 style="font-size:18px;font-weight:700">Model test</h2><p style="font-size:12px;color:var(--muted);margin-top:2px">Send a minimal request to each model to verify availability</p></div>
+          <button class="btn primary" onclick="modelTestAll()"><i data-lucide="play" style="width:14px;height:14px"></i> Test all</button>
+        </div>
+        <div class="card">
+          <table class="table"><thead><tr><th>Model</th><th>Status</th><th>Latency</th><th>Reply</th></tr></thead><tbody id="modelTestRows"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody></table>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section id="page-settings" style="display:none">
+        <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
+        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:4141"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="300"></div><div class="form-group"><label class="form-label">Stream resume attempts</label><input class="form-input" id="setResumeAttempts" type="number" min="0" max="2" placeholder="1"><p class="form-hint">Retry an interrupted text stream by continuing from its delivered tail. Use 0 to disable.</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- Key Modal -->
+<div class="modal-overlay" id="keyModal">
+  <div class="modal">
+    <h3>Create API key</h3>
+    <p class="subtitle">此密钥用于认证 OpenAI / Anthropic 兼容接口的请求。完整密钥仅显示一次——请立即复制保存。创建后可在密钥列表中点击"使用密钥"查看客户端配置示例。</p>
+    <form onsubmit="createKey(event)">
+      <div class="form-group">
+        <label class="form-label">Name</label>
+        <input class="form-input" id="keyName" value="default" autofocus>
+        <div class="form-hint">用于标识此密钥的标签（如"my-laptop"、"claude-code"）</div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn" onclick="closeKeyModal()">Cancel</button>
+        <button type="submit" class="btn primary">Create</button>
+      </div>
+    </form>
+    <div id="keyResult" style="display:none">
+      <div class="highlight-box"><b>Copy and save this key now</b><div class="copy-field"><input class="form-input" id="keyValue" readonly><button class="btn-sm btn" onclick="copyKey()">Copy</button></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Key Modal -->
+<div class="modal-overlay" id="editKeyModal">
+  <div class="modal">
+    <h3>Edit API key</h3>
+    <p class="subtitle">Change the key name</p>
+    <div class="form-group">
+      <label class="form-label">Name</label>
+      <input class="form-input" id="editKeyName">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeEditKeyModal()">Cancel</button>
+      <button class="btn primary" onclick="saveEditKey()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Use API Modal -->
+<div class="modal-overlay" id="useKeyModal">
+  <div class="modal wide">
+    <div class="modal-head">
+      <div>
+        <h3>Use API key</h3>
+        <p class="subtitle" id="useKeyName"></p>
+      </div>
+      <button class="modal-close" onclick="closeUseKey()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
+    </div>
+    <div class="copy-field">
+      <input class="form-input" id="useKeyVal" readonly onclick="this.select()">
+      <button class="btn btn-sm" onclick="copyUseKey()">Copy</button>
+    </div>
+    <div class="uke-tabs" id="useKeyClients"></div>
+    <div class="uke-tabs" id="useKeyOs"></div>
+    <div id="useKeyFiles"></div>
+  </div>
+</div>
+
+<div class="notice" id="notice" style="display:none"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const pages={dashboard:'Dashboard',usage:'Usage',accounts:'Accounts',apikeys:'API Keys',conversations:'Conversations',proxies:'Proxy Pool',modeltest:'Model Test',settings:'Settings'};
+const localeStorageKey='m365_locale';
+const localeSelectionKey='m365_locale_selected';
+const SUPPORTED_LOCALES=['en','zh-CN','zh-TW','ja','ko','es','fr','de','pt-BR','ru','ar'];
+const localeText={
+  'Administrator Login': {'zh-CN':'管理员登录','zh-TW':'管理員登入','ja':'管理者ログイン','ko':'관리자 로그인','es':'Inicio de sesión de administrador','fr':'Connexion administrateur','de':'Administrator-Anmeldung','pt-BR':'Login de administrador','ru':'Вход администратора','ar':'تسجيل دخول المسؤول'},
+  'Password': {'zh-CN':'密码','zh-TW':'密碼','ja':'パスワード','ko':'비밀번호','es':'Contraseña','fr':'Mot de passe','de':'Passwort','pt-BR':'Senha','ru':'Пароль','ar':'كلمة المرور'},
+  'Enter administrator password': {'zh-CN':'请输入管理员密码','zh-TW':'請輸入管理員密碼','ja':'管理者パスワードを入力してください','ko':'관리자 비밀번호를 입력하세요','es':'Introduzca la contraseña de administrador','fr':'Saisissez le mot de passe administrateur','de':'Administrator-Passwort eingeben','pt-BR':'Digite a senha do administrador','ru':'Введите пароль администратора','ar':'أدخل كلمة مرور المسؤول'},
+  'Log in': {'zh-CN':'登录','zh-TW':'登入','ja':'ログイン','ko':'로그인','es':'Iniciar sesión','fr':'Connexion','de':'Anmelden','pt-BR':'Entrar','ru':'Войти','ar':'تسجيل الدخول'},
+  'Overview': {'zh-CN':'概览','zh-TW':'總覽','ja':'概要','ko':'개요','es':'Resumen','fr':'Aperçu','de':'Übersicht','pt-BR':'Visão geral','ru':'Обзор','ar':'نظرة عامة'},
+  'Dashboard': {'zh-CN':'仪表盘','zh-TW':'儀表板','ja':'ダッシュボード','ko':'대시보드','es':'Panel de control','fr':'Tableau de bord','de':'Dashboard','pt-BR':'Painel','ru':'Панель управления','ar':'لوحة المعلومات'},
+  'Usage': {'zh-CN':'用量','zh-TW':'用量','ja':'使用量','ko':'사용량','es':'Uso','fr':'Utilisation','de':'Nutzung','pt-BR':'Uso','ru':'Использование','ar':'الاستخدام'},
+  'Management': {'zh-CN':'管理','zh-TW':'管理','ja':'管理','ko':'관리','es':'Gestión','fr':'Gestion','de':'Verwaltung','pt-BR':'Gerenciamento','ru':'Управление','ar':'الإدارة'},
+  'Accounts': {'zh-CN':'账号','zh-TW':'帳號','ja':'アカウント','ko':'계정','es':'Cuentas','fr':'Comptes','de':'Konten','pt-BR':'Contas','ru':'Аккаунты','ar':'الحسابات'},
+  'API Keys': {'zh-CN':'API Keys','zh-TW':'API Keys','ja':'API キー','ko':'API 키','es':'Claves API','fr':'Clés API','de':'API-Schlüssel','pt-BR':'Chaves API','ru':'API-ключи','ar':'مفاتيح API'},
+  'Conversations': {'zh-CN':'对话管理','zh-TW':'對話管理','ja':'会話管理','ko':'대화 관리','es':'Conversaciones','fr':'Conversations','de':'Unterhaltungen','pt-BR':'Conversas','ru':'Разговоры','ar':'المحادثات'},
+  'System': {'zh-CN':'系统','zh-TW':'系統','ja':'システム','ko':'시스템','es':'Sistema','fr':'Système','de':'System','pt-BR':'Sistema','ru':'Система','ar':'النظام'},
+  'Proxy Pool': {'zh-CN':'代理池','zh-TW':'代理池','ja':'プロキシプール','ko':'프록시 풀','es':'Grupo de proxies','fr':'Pool de proxys','de':'Proxy-Pool','pt-BR':'Pool de proxies','ru':'Пул прокси','ar':'مجموعة البروكسي'},
+  'Model Test': {'zh-CN':'模型测试','zh-TW':'模型測試','ja':'モデルテスト','ko':'모델 테스트','es':'Prueba de modelos','fr':'Test de modèles','de':'Modelltest','pt-BR':'Teste de modelos','ru':'Тест моделей','ar':'اختبار النماذج'},
+  'Settings': {'zh-CN':'设置','zh-TW':'設定','ja':'設定','ko':'설정','es':'Ajustes','fr':'Paramètres','de':'Einstellungen','pt-BR':'Configurações','ru':'Настройки','ar':'الإعدادات'},
+  'Running': {'zh-CN':'运行中','zh-TW':'執行中','ja':'実行中','ko':'실행 중','es':'En ejecución','fr':'En cours','de':'Wird ausgeführt','pt-BR':'Em execução','ru':'Работает','ar':'قيد التشغيل'},
+  'Log out': {'zh-CN':'退出','zh-TW':'登出','ja':'ログアウト','ko':'로그아웃','es':'Cerrar sesión','fr':'Déconnexion','de':'Abmelden','pt-BR':'Sair','ru':'Выйти','ar':'تسجيل الخروج'},
+  'Getting Started': {'zh-CN':'开始使用','zh-TW':'開始使用','ja':'はじめに','ko':'시작하기','es':'Primeros pasos','fr':'Bien démarrer','de':'Erste Schritte','pt-BR':'Começando','ru':'Начало работы','ar':'ابدأ'},
+  'Start using your API gateway in a few steps': {'zh-CN':'几步内开始使用你的 API 网关','zh-TW':'幾步內開始使用你的 API 閘道','ja':'数ステップで API ゲートウェイを使い始める','ko':'몇 단계로 API 게이트웨이 사용 시작','es':'Empiece a usar su puerta de enlace API en unos pasos','fr':'Commencez à utiliser votre passerelle API en quelques étapes','de':'In wenigen Schritten Ihre API-Gateway nutzen','pt-BR':'Comece a usar seu gateway de API em poucos passos','ru':'Начните использовать API-шлюз за несколько шагов','ar':'ابدأ باستخدام بوابتك API في بضع خطوات'},
+  'Add a Microsoft account and create an API key to chat through the OpenAI-compatible API.': {'zh-CN':'添加 Microsoft 账号、创建 API Key，即可通过 OpenAI 兼容接口对话。','zh-TW':'新增 Microsoft 帳號、建立 API Key，即可透過 OpenAI 相容介面對話。','ja':'Microsoft アカウントを追加して API キーを作成すれば、OpenAI 互換 API で会話できます。','ko':'Microsoft 계정을 추가하고 API 키를 만들면 OpenAI 호환 API로 대화할 수 있습니다.','es':'Añada una cuenta Microsoft y cree una clave API para chatear a través de la API compatible con OpenAI.','fr':'Ajoutez un compte Microsoft et créez une clé API pour discuter via l\'API compatible OpenAI.','de':'Fügen Sie ein Microsoft-Konto hinzu und erstellen Sie einen API-Schlüssel, um über die OpenAI-kompatible API zu chatten.','pt-BR':'Adicione uma conta Microsoft e crie uma chave API para conversar pela API compatível com OpenAI.','ru':'Добавьте учетную запись Microsoft и создайте API-ключ, чтобы общаться через API, совместимый с OpenAI.','ar':'أضف حساب Microsoft وأنشئ مفتاح API للدردشة عبر واجهة متوافقة مع OpenAI'},
+  'Hide guide': {'zh-CN':'隐藏入门引导','zh-TW':'隱藏入門引導','ja':'ガイドを非表示','ko':'가이드 숨기기','es':'Ocultar guía','fr':'Masquer le guide','de':'Leitfaden ausblenden','pt-BR':'Ocultar guia','ru':'Скрыть руководство','ar':'إخفاء الدليل'},
+  'Add an account': {'zh-CN':'添加账号','zh-TW':'新增帳號','ja':'アカウントを追加','ko':'계정 추가','es':'Añadir cuenta','fr':'Ajouter un compte','de':'Konto hinzufügen','pt-BR':'Adicionar conta','ru':'Добавить аккаунт','ar':'إضافة حساب'},
+  'Authorize a Microsoft account and add it to the available pool': {'zh-CN':'授权 Microsoft 账号，加入可用账号池','zh-TW':'授權 Microsoft 帳號，加入可用帳號池','ja':'Microsoft アカウントを承認して利用可能プールに追加','ko':'Microsoft 계정을 인증하고 사용 가능한 풀에 추가','es':'Autorice una cuenta Microsoft y agréguela al grupo disponible','fr':'Autorisez un compte Microsoft et ajoutez-le au pool disponible','de':'Microsoft-Konto autorisieren und zum verfügbaren Pool hinzufügen','pt-BR':'Autorize uma conta Microsoft e adicione-a ao pool disponível','ru':'Авторизуйте учетную запись Microsoft и добавьте её в доступный пул','ar':'أذِن لحساب Microsoft وأضفه إلى المجموعة المتاحة'},
+  'Create an API key': {'zh-CN':'创建 API Key','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
+  'Create an access key for this application or service': {'zh-CN':'为你的本应用或服务创建访问密钥','zh-TW':'為你的本應用程式或服務建立存取金鑰','ja':'このアプリケーションまたはサービスのアクセスキーを作成','ko':'이 앱 또는 서비스의 액세스 키 생성','es':'Cree una clave de acceso para esta aplicación o servicio','fr':'Créez une clé d\'accès pour cette application ou ce service','de':'Erstellen Sie einen Zugriffsschlüssel für diese Anwendung oder diesen Dienst','pt-BR':'Crie uma chave de acesso para este aplicativo ou serviço','ru':'Создайте ключ доступа для этого приложения или сервиса','ar':'أنشئ مفتاح وصول لهذا التطبيق أو الخدمة'},
+  'Send a request': {'zh-CN':'发送请求','zh-TW':'傳送要求','ja':'リクエストを送信','ko':'요청 보내기','es':'Enviar solicitud','fr':'Envoyer une requête','de':'Anfrage senden','pt-BR':'Enviar solicitação','ru':'Отправить запрос','ar':'إرسال طلب'},
+  'Verify the route with the curl example below': {'zh-CN':'用下方 curl 示例验证路由','zh-TW':'用下方 curl 範例驗證路由','ja':'以下の curl 例でルートを確認','ko':'아래 curl 예제로 경로 확인','es':'Verifique la ruta con el ejemplo curl de abajo','fr':'Vérifiez la route avec l\'exemple curl ci-dessous','de':'Route mit dem curl-Beispiel unten prüfen','pt-BR':'Verifique a rota com o exemplo curl abaixo','ru':'Проверьте маршрут с помощью примера curl ниже','ar':'تحقق من المسار بمثال curl أدناه'},
+  'First API request': {'zh-CN':'首个 API 请求','zh-TW':'首個 API 要求','ja':'最初の API リクエスト','ko':'첫 API 요청','es':'Primera solicitud API','fr':'Première requête API','de':'Erste API-Anfrage','pt-BR':'Primeira solicitação API','ru':'Первый API-запрос','ar':'أول طلب API'},
+  'OpenAI-compatible API': {'zh-CN':'OpenAI 兼容接口','zh-TW':'OpenAI 相容介面','ja':'OpenAI 互換 API','ko':'OpenAI 호환 API','es':'API compatible con OpenAI','fr':'API compatible OpenAI','de':'OpenAI-kompatible API','pt-BR':'API compatível com OpenAI','ru':'API, совместимый с OpenAI','ar':'واجهة متوافقة مع OpenAI'},
+  'Copy': {'zh-CN':'复制','zh-TW':'複製','ja':'コピー','ko':'복사','es':'Copiar','fr':'Copier','de':'Kopieren','pt-BR':'Copiar','ru':'Копировать','ar':'نسخ'},
+  'Gateway': {'zh-CN':'网关','zh-TW':'閘道','ja':'ゲートウェイ','ko':'게이트웨이','es':'Puerta de enlace','fr':'Passerelle','de':'Gateway','pt-BR':'Gateway','ru':'Шлюз','ar':'البوابة'},
+  'Online': {'zh-CN':'在线','zh-TW':'線上','ja':'オンライン','ko':'온라인','es':'En línea','fr':'En ligne','de':'Online','pt-BR':'Online','ru':'В сети','ar':'متصل'},
+  'Available accounts': {'zh-CN':'可用账号','zh-TW':'可用帳號','ja':'利用可能なアカウント','ko':'사용 가능한 계정','es':'Cuentas disponibles','fr':'Comptes disponibles','de':'Verfügbare Konten','pt-BR':'Contas disponíveis','ru':'Доступные аккаунты','ar':'الحسابات المتاحة'},
+  'API Key': {'zh-CN':'API Key','zh-TW':'API Key','ja':'API キー','ko':'API 키','es':'Clave API','fr':'Clé API','de':'API-Schlüssel','pt-BR':'Chave API','ru':'API-ключ','ar':'مفتاح API'},
+  'Last 24 hours': {'zh-CN':'近 24 小时消耗','zh-TW':'近 24 小時消耗','ja':'過去24時間の消費','ko':'최근 24시간 사용','es':'Últimas 24 horas','fr':'Dernières 24 heures','de':'Letzte 24 Stunden','pt-BR':'Últimas 24 horas','ru':'Последние 24 часа','ar':'آخر 24 ساعة'},
+  'All-time usage': {'zh-CN':'历史使用情况','zh-TW':'歷史使用情況','ja':'全期間の使用量','ko':'전체 사용량','es':'Uso histórico','fr':'Utilisation totale','de':'Gesamtnutzung','pt-BR':'Uso histórico','ru':'Использование за всё время','ar':'الاستخدام الكلي'},
+  'Request count': {'zh-CN':'请求计数','zh-TW':'要求計數','ja':'リクエスト数','ko':'요청 수','es':'Número de solicitudes','fr':'Nombre de requêtes','de':'Anzahl der Anfragen','pt-BR':'Número de solicitações','ru':'Количество запросов','ar':'عدد الطلبات'},
+  'Cache hits': {'zh-CN':'缓存命中','zh-TW':'快取命中','ja':'キャッシュヒット','ko':'캐시 적중','es':'Aciertos de caché','fr':'Hits de cache','de':'Cache-Treffer','pt-BR':'Acertos de cache','ru':'Попадания в кэш','ar':'إصابات ذاكرة التخزين المؤقت'},
+  'Total sessions': {'zh-CN':'总会话数','zh-TW':'總會話數','ja':'セッション総数','ko':'총 세션 수','es':'Sesiones totales','fr':'Sessions totales','de':'Gesamtsitzungen','pt-BR':'Sessões totais','ru':'Всего сессий','ar':'إجمالي الجلسات'},
+  'total': {'zh-CN':'个','zh-TW':'個','ja':'件','ko':'개','es':'total','fr':'total','de':'gesamt','pt-BR':'total','ru':'шт.','ar':'إجمالي'},
+  'hits': {'zh-CN':'次','zh-TW':'次','ja':'回','ko':'회','es':'aciertos','fr':'hits','de':'Treffer','pt-BR':'acertos','ru':'раз','ar':'مرة'},
+  'Hit rate': {'zh-CN':'命中率','zh-TW':'命中率','ja':'ヒット率','ko':'적중률','es':'Tasa de aciertos','fr':'Taux de hits','de':'Trefferquote','pt-BR':'Taxa de acertos','ru':'Частота попаданий','ar':'معدل الإصابات'},
+  'Tokens saved': {'zh-CN':'节省 Token','zh-TW':'節省 Token','ja':'節約されたトークン','ko':'절약된 토큰','es':'Tokens ahorrados','fr':'Tokens économisés','de':'Gesparte Tokens','pt-BR':'Tokens economizados','ru':'Сэкономленные токены','ar':'الرموز الموفرة'},
+  'saved': {'zh-CN':'节省','zh-TW':'節省','ja':'節約','ko':'절약','es':'ahorrados','fr':'économisés','de':'gespart','pt-BR':'economizados','ru':'сэкономлено','ar':'تم التوفير'},
+  'Quick actions': {'zh-CN':'快捷操作','zh-TW':'快速操作','ja':'クイック操作','ko':'빠른 작업','es':'Acciones rápidas','fr':'Actions rapides','de':'Schnellaktionen','pt-BR':'Ações rápidas','ru':'Быстрые действия','ar':'إجراءات سريعة'},
+  'Authorize a Microsoft account': {'zh-CN':'一键授权 Microsoft 账号','zh-TW':'一鍵授權 Microsoft 帳號','ja':'Microsoft アカウントを承認','ko':'Microsoft 계정 인증','es':'Autorizar una cuenta Microsoft','fr':'Autoriser un compte Microsoft','de':'Microsoft-Konto autorisieren','pt-BR':'Autorizar conta Microsoft','ru':'Авторизовать аккаунт Microsoft','ar':'أذِن بحساب Microsoft'},
+  'Generate a new access key': {'zh-CN':'生成新的访问密钥','zh-TW':'產生新的存取金鑰','ja':'新しいアクセスキーを生成','ko':'새 액세스 키 생성','es':'Generar nueva clave de acceso','fr':'Générer une nouvelle clé d\'accès','de':'Neuen Zugriffsschlüssel generieren','pt-BR':'Gerar nova chave de acesso','ru':'Сгенерировать новый ключ доступа','ar':'إنشاء مفتاح وصول جديد'},
+  'Clean conversations': {'zh-CN':'清理对话','zh-TW':'清理對話','ja':'会話をクリーンアップ','ko':'대화 정리','es':'Limpiar conversaciones','fr':'Nettoyer les conversations','de':'Unterhaltungen bereinigen','pt-BR':'Limpar conversas','ru':'Очистить разговоры','ar':'تنظيف المحادثات'},
+  'Delete conversations you no longer need': {'zh-CN':'删除不需要的对话','zh-TW':'刪除不需要的對話','ja':'不要になった会話を削除','ko':'더 이상 필요 없는 대화 삭제','es':'Eliminar conversaciones que ya no necesite','fr':'Supprimer les conversations dont vous n\'avez plus besoin','de':'Nicht mehr benötigte Unterhaltungen löschen','pt-BR':'Excluir conversas que não precisa mais','ru':'Удалить ненужные разговоры','ar':'حذف المحادثات التي لم تعد بحاجتها'},
+  'Recent requests': {'zh-CN':'最近请求','zh-TW':'最近要求','ja':'最近のリクエスト','ko':'최근 요청','es':'Solicitudes recientes','fr':'Requêtes récentes','de':'Letzte Anfragen','pt-BR':'Solicitações recentes','ru':'Недавние запросы','ar':'الطلبات الأخيرة'},
+  'View all': {'zh-CN':'查看全部','zh-TW':'查看全部','ja':'すべて表示','ko':'모두 보기','es':'Ver todo','fr':'Tout voir','de':'Alle anzeigen','pt-BR':'Ver tudo','ru':'Показать все','ar':'عرض الكل'},
+  'Time': {'zh-CN':'时间','zh-TW':'時間','ja':'時刻','ko':'시간','es':'Hora','fr':'Heure','de':'Zeit','pt-BR':'Horário','ru':'Время','ar':'الوقت'},
+  'Model': {'zh-CN':'模型','zh-TW':'模型','ja':'モデル','ko':'모델','es':'Modelo','fr':'Modèle','de':'Modell','pt-BR':'Modelo','ru':'Модель','ar':'النموذج'},
+  'Endpoint': {'zh-CN':'端点','zh-TW':'端點','ja':'エンドポイント','ko':'엔드포인트','es':'Punto final','fr':'Point d\'entrée','de':'Endpunkt','pt-BR':'Endpoint','ru':'Конечная точка','ar':'نقطة النهاية'},
+  'Tokens': {'zh-CN':'Tokens','zh-TW':'Tokens','ja':'トークン','ko':'토큰','es':'Tokens','fr':'Tokens','de':'Tokens','pt-BR':'Tokens','ru':'Токены','ar':'الرموز'},
+  'Status': {'zh-CN':'状态','zh-TW':'狀態','ja':'ステータス','ko':'상태','es':'Estado','fr':'Statut','de':'Status','pt-BR':'Status','ru':'Статус','ar':'الحالة'},
+  'Calls': {'zh-CN':'调用次数','zh-TW':'呼叫次數','ja':'呼び出し回数','ko':'호출 횟수','es':'Llamadas','fr':'Appels','de':'Aufrufe','pt-BR':'Chamadas','ru':'Вызовы','ar':'الاستدعاءات'},
+  'Scheduling': {'zh-CN':'调度','zh-TW':'調度','ja':'スケジュール','ko':'스케줄링','es':'Programación','fr':'Planification','de':'Planung','pt-BR':'Agendamento','ru':'Планирование','ar':'الجدولة'},
+  'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
+  'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
+  'Estimated token usage and request performance': {'zh-CN':'估算 Token 用量与请求性能','zh-TW':'估算 Token 用量與要求效能','ja':'推定トークン使用量とリクエスト性能','ko':'예상 토큰 사용량 및 요청 성능','es':'Uso estimado de tokens y rendimiento de solicitudes','fr':'Utilisation estimée des tokens et performances des requêtes','de':'Geschätzte Token-Nutzung und Anfrageleistung','pt-BR':'Uso estimado de tokens e desempenho das solicitações','ru':'Оценка использования токенов и производительности запросов','ar':'الاستخدام التقديري للرموز وأداء الطلبات'},
+  'Gateway estimates only; Microsoft does not return billing token counts.': {'zh-CN':'仅为网关估算值；微软未返回真实计费 Token 数。','zh-TW':'僅為閘道估算值；微軟未回傳真實計費 Token 數。','ja':'ゲートウェイによる推定値です。Microsoft は課金トークン数を返しません。','ko':'게이트웨이 추정치이며 Microsoft는 청구 토큰 수를 반환하지 않습니다.','es':'Solo estimaciones del gateway; Microsoft no devuelve recuentos de tokens de facturación.','fr':'Estimations de la passerelle uniquement ; Microsoft ne renvoie pas le nombre de tokens facturés.','de':'Nur Gateway-Schätzwerte; Microsoft liefert keine Abrechnungs-Tokenzahlen.','pt-BR':'Apenas estimativas do gateway; a Microsoft não retorna contagens de tokens de cobrança.','ru':'Только оценка шлюза; Microsoft не возвращает число тарифицируемых токенов.','ar':'تقديرات البوابة فقط؛ لا تعيد Microsoft عدد رموز الفوترة.'},
+  'History tokens are shown separately and excluded from totals.': {'zh-CN':'历史上下文 Token 单独展示，不计入总量。','zh-TW':'歷史上下文 Token 單獨顯示，不計入總量。','ja':'履歴トークンは別表示され、合計には含まれません。','ko':'기록 토큰은 별도로 표시되며 합계에서 제외됩니다.','es':'Los tokens de historial se muestran por separado y se excluyen de los totales.','fr':'Les tokens d\'historique sont affichés séparément et exclus des totaux.','de':'Verlaufstokens werden separat angezeigt und nicht in die Gesamtsumme einbezogen.','pt-BR':'Os tokens de histórico são exibidos separadamente e excluídos dos totais.','ru':'Токены истории показаны отдельно и не входят в итоговое значение.','ar':'تُعرض رموز السجل بشكل منفصل ولا تُحتسب ضمن الإجمالي.'},
+  'Unknown': {'zh-CN':'未知','zh-TW':'未知','ja':'不明','ko':'알 수 없음','es':'Desconocido','fr':'Inconnu','de':'Unbekannt','pt-BR':'Desconhecido','ru':'Неизвестно','ar':'غير معروف'},
+  'Estimated tokens': {'zh-CN':'估算 Token','zh-TW':'估算 Token','ja':'推定トークン','ko':'예상 토큰','es':'Tokens estimados','fr':'Tokens estimés','de':'Geschätzte Tokens','pt-BR':'Tokens estimados','ru':'Оценка токенов','ar':'الرموز التقديرية'},
+  'Success rate': {'zh-CN':'成功率','zh-TW':'成功率','ja':'成功率','ko':'성공률','es':'Tasa de éxito','fr':'Taux de réussite','de':'Erfolgsquote','pt-BR':'Taxa de sucesso','ru':'Доля успешных запросов','ar':'معدل النجاح'},
+  'Average TTFT': {'zh-CN':'平均首字延迟','zh-TW':'平均首字延遲','ja':'平均 TTFT','ko':'평균 TTFT','es':'TTFT medio','fr':'TTFT moyen','de':'Durchschnittliche TTFT','pt-BR':'TTFT médio','ru':'Среднее TTFT','ar':'متوسط TTFT'},
+  'Stream resume attempts': {'zh-CN':'流式续接次数','zh-TW':'串流續接次數','ja':'ストリーム再開回数','ko':'스트림 재개 횟수','es':'Intentos de reanudación del flujo','fr':'Tentatives de reprise du flux','de':'Stream-Fortsetzungsversuche','pt-BR':'Tentativas de retomada do fluxo','ru':'Попытки продолжения потока','ar':'محاولات استئناف البث'},
+  'Retry an interrupted text stream by continuing from its delivered tail. Use 0 to disable.': {'zh-CN':'文本流异常中断时，从已输出内容末尾继续生成；设为 0 可关闭。','zh-TW':'文字串流異常中斷時，從已輸出內容末尾繼續生成；設為 0 可關閉。','ja':'中断したテキストストリームを出力済み末尾から再開します。0 で無効。','ko':'중단된 텍스트 스트림을 출력된 끝부분부터 재개합니다. 0이면 비활성화됩니다.','es':'Reanuda un flujo de texto interrumpido desde el final ya entregado. Usa 0 para desactivarlo.','fr':'Reprend un flux texte interrompu depuis la fin déjà transmise. Utilisez 0 pour désactiver.','de':'Setzt einen unterbrochenen Textstream ab dem bereits gelieferten Ende fort. 0 deaktiviert.','pt-BR':'Retoma um fluxo de texto interrompido a partir do trecho já entregue. Use 0 para desativar.','ru':'Продолжает прерванный текстовый поток с уже переданного конца. 0 отключает функцию.','ar':'يستأنف تدفق النص المنقطع من نهاية النص الذي تم تسليمه. استخدم 0 للتعطيل.'},
+  'P95 latency': {'zh-CN':'P95 总耗时','zh-TW':'P95 總耗時','ja':'P95 レイテンシ','ko':'P95 지연 시간','es':'Latencia P95','fr':'Latence P95','de':'P95-Latenz','pt-BR':'Latência P95','ru':'Задержка P95','ar':'زمن الاستجابة P95'},
+  'Estimated token usage trend': {'zh-CN':'估算 Token 使用趋势','zh-TW':'估算 Token 使用趨勢','ja':'推定トークン使用量の傾向','ko':'예상 토큰 사용 추세','es':'Tendencia estimada de uso de tokens','fr':'Tendance estimée de l\'utilisation des tokens','de':'Trend der geschätzten Token-Nutzung','pt-BR':'Tendência estimada de uso de tokens','ru':'Тренд оценочного использования токенов','ar':'اتجاه الاستخدام التقديري للرموز'},
+  'Estimated daily token consumption': {'zh-CN':'按天汇总的估算 Token 消耗','zh-TW':'按天彙總的估算 Token 消耗','ja':'日別の推定トークン消費量','ko':'일별 예상 토큰 소비','es':'Consumo diario estimado de tokens','fr':'Consommation quotidienne estimée de tokens','de':'Geschätzter täglicher Token-Verbrauch','pt-BR':'Consumo diário estimado de tokens','ru':'Оценочный ежедневный расход токенов','ar':'الاستهلاك اليومي التقديري للرموز'},
+  'Estimated token usage by model': {'zh-CN':'按模型统计的估算 Token 用量','zh-TW':'按模型統計的估算 Token 用量','ja':'モデル別の推定トークン使用量','ko':'모델별 예상 토큰 사용량','es':'Uso estimado de tokens por modelo','fr':'Utilisation estimée des tokens par modèle','de':'Geschätzte Token-Nutzung nach Modell','pt-BR':'Uso estimado de tokens por modelo','ru':'Оценочное использование токенов по моделям','ar':'الاستخدام التقديري للرموز حسب النموذج'},
+  'Request ID': {'zh-CN':'请求 ID','zh-TW':'要求 ID','ja':'リクエスト ID','ko':'요청 ID','es':'ID de solicitud','fr':'ID de requête','de':'Anfrage-ID','pt-BR':'ID da solicitação','ru':'ID запроса','ar':'معرّف الطلب'},
+  'Model / Endpoint': {'zh-CN':'模型 / 端点','zh-TW':'模型 / 端點','ja':'モデル / エンドポイント','ko':'모델 / 엔드포인트','es':'Modelo / Endpoint','fr':'Modèle / Endpoint','de':'Modell / Endpunkt','pt-BR':'Modelo / Endpoint','ru':'Модель / Эндпоинт','ar':'النموذج / نقطة النهاية'},
+  'TTFT / Total': {'zh-CN':'首字延迟 / 总耗时','zh-TW':'首字延遲 / 總耗時','ja':'TTFT / 合計','ko':'TTFT / 총 시간','es':'TTFT / Total','fr':'TTFT / Total','de':'TTFT / Gesamt','pt-BR':'TTFT / Total','ru':'TTFT / Всего','ar':'TTFT / الإجمالي'},
+  'Tokens (est.)': {'zh-CN':'Token（估算）','zh-TW':'Token（估算）','ja':'トークン（推定）','ko':'토큰(예상)','es':'Tokens (est.)','fr':'Tokens (est.)','de':'Tokens (gesch.)','pt-BR':'Tokens (est.)','ru':'Токены (оценка)','ar':'الرموز (تقديري)'},
+  'Retries / Tools': {'zh-CN':'重试 / 工具','zh-TW':'重試 / 工具','ja':'再試行 / ツール','ko':'재시도 / 도구','es':'Reintentos / Herramientas','fr':'Tentatives / Outils','de':'Wiederholungen / Tools','pt-BR':'Tentativas / Ferramentas','ru':'Повторы / Инструменты','ar':'إعادات المحاولة / الأدوات'},
+  'Token usage statistics and request details': {'zh-CN':'Token 用量统计与请求明细','zh-TW':'Token 用量統計與要求明細','ja':'トークン使用量の統計とリクエスト詳細','ko':'토큰 사용 통계 및 요청 상세','es':'Estadísticas de uso de tokens y detalles de solicitudes','fr':'Statistiques d\'utilisation des tokens et détails des requêtes','de':'Token-Nutzungsstatistik und Anfragedetails','pt-BR':'Estatísticas de uso de tokens e detalhes de solicitações','ru':'Статистика использования токенов и детали запросов','ar':'إحصائيات استخدام الرموز وتفاصيل الطلبات'},
+  '7 days': {'zh-CN':'7天','zh-TW':'7天','ja':'7日','ko':'7일','es':'7 días','fr':'7 jours','de':'7 Tage','pt-BR':'7 dias','ru':'7 дней','ar':'7 أيام'},
+  '30 days': {'zh-CN':'30天','zh-TW':'30天','ja':'30日','ko':'30일','es':'30 días','fr':'30 jours','de':'30 Tage','pt-BR':'30 dias','ru':'30 дней','ar':'30 يومًا'},
+  '90 days': {'zh-CN':'90天','zh-TW':'90天','ja':'90日','ko':'90일','es':'90 días','fr':'90 jours','de':'90 Tage','pt-BR':'90 dias','ru':'90 дней','ar':'90 يومًا'},
+  'Total requests': {'zh-CN':'总请求数','zh-TW':'總要求數','ja':'リクエスト総数','ko':'총 요청 수','es':'Solicitudes totales','fr':'Requêtes totales','de':'Anfragen gesamt','pt-BR':'Solicitações totais','ru':'Всего запросов','ar':'إجمالي الطلبات'},
+  'Total tokens': {'zh-CN':'总 Token','zh-TW':'總 Token','ja':'トークン総数','ko':'총 토큰','es':'Tokens totales','fr':'Tokens totaux','de':'Tokens gesamt','pt-BR':'Tokens totais','ru':'Всего токенов','ar':'إجمالي الرموز'},
+  'Cached tokens': {'zh-CN':'缓存命中','zh-TW':'快取命中','ja':'キャッシュされたトークン','ko':'캐시된 토큰','es':'Tokens en caché','fr':'Tokens en cache','de':'Gecachte Tokens','pt-BR':'Tokens em cache','ru':'Токены из кэша','ar':'الرموز المخزنة مؤقتًا'},
+  'Average latency': {'zh-CN':'平均耗时','zh-TW':'平均耗時','ja':'平均レイテンシ','ko':'평균 지연 시간','es':'Latencia media','fr':'Latence moyenne','de':'Durchschnittliche Latenz','pt-BR':'Latência média','ru':'Средняя задержка','ar':'متوسط زمن الاستجابة'},
+  'Token usage trend': {'zh-CN':'Token 使用趋势','zh-TW':'Token 使用趨勢','ja':'トークン使用量の傾向','ko':'토큰 사용 추세','es':'Tendencia de uso de tokens','fr':'Tendance d\'utilisation des tokens','de':'Token-Nutzungstrend','pt-BR':'Tendência de uso de tokens','ru':'Тенденция использования токенов','ar':'اتجاه استخدام الرموز'},
+  'Daily token consumption': {'zh-CN':'按天汇总的 Token 消耗','zh-TW':'按天彙總的 Token 消耗','ja':'日別トークン消費量','ko':'일별 토큰 소비','es':'Consumo diario de tokens','fr':'Consommation quotidienne de tokens','de':'Täglicher Token-Verbrauch','pt-BR':'Consumo diário de tokens','ru':'Ежедневный расход токенов','ar':'الاستهلاك اليومي للرموز'},
+  'Model distribution': {'zh-CN':'模型分布','zh-TW':'模型分佈','ja':'モデル分布','ko':'모델 분포','es':'Distribución de modelos','fr':'Répartition des modèles','de':'Modellverteilung','pt-BR':'Distribuição de modelos','ru':'Распределение моделей','ar':'توزيع النماذج'},
+  'Token usage by model': {'zh-CN':'按模型统计的 Token 用量','zh-TW':'按模型統計的 Token 用量','ja':'モデル別トークン使用量','ko':'모델별 토큰 사용량','es':'Uso de tokens por modelo','fr':'Utilisation de tokens par modèle','de':'Token-Nutzung nach Modell','pt-BR':'Uso de tokens por modelo','ru':'Использование токенов по моделям','ar':'استخدام الرموز حسب النموذج'},
+  'Endpoint distribution': {'zh-CN':'端点分布','zh-TW':'端點分佈','ja':'エンドポイント分布','ko':'엔드포인트 분포','es':'Distribución de puntos finales','fr':'Répartition des points d\'entrée','de':'Endpunktverteilung','pt-BR':'Distribuição de endpoints','ru':'Распределение конечных точек','ar':'توزيع نقاط النهاية'},
+  'Requests by endpoint': {'zh-CN':'按接口统计的请求量','zh-TW':'按介面統計的要求量','ja':'エンドポイント別リクエスト数','ko':'엔드포인트별 요청 수','es':'Solicitudes por punto final','fr':'Requêtes par point d\'entrée','de':'Anfragen nach Endpunkt','pt-BR':'Solicitações por endpoint','ru':'Запросы по конечным точкам','ar':'الطلبات حسب نقطة النهاية'},
+  'API key usage': {'zh-CN':'API Key 用量','zh-TW':'API Key 用量','ja':'API キー使用量','ko':'API 키 사용량','es':'Uso de claves API','fr':'Utilisation des clés API','de':'API-Schlüssel-Nutzung','pt-BR':'Uso de chaves API','ru':'Использование API-ключей','ar':'استخدام مفاتيح API'},
+  'Requests by API key': {'zh-CN':'按密钥统计的请求量','zh-TW':'按金鑰統計的要求量','ja':'API キー別リクエスト数','ko':'API 키별 요청 수','es':'Solicitudes por clave API','fr':'Requêtes par clé API','de':'Anfragen nach API-Schlüssel','pt-BR':'Solicitações por chave API','ru':'Запросы по API-ключам','ar':'الطلبات حسب مفتاح API'},
+  'Request details': {'zh-CN':'请求明细','zh-TW':'要求明細','ja':'リクエスト詳細','ko':'요청 상세','es':'Detalles de solicitud','fr':'Détails de la requête','de':'Anfragedetails','pt-BR':'Detalhes da solicitação','ru':'Детали запроса','ar':'تفاصيل الطلب'},
+  'Recent records': {'zh-CN':'最近记录','zh-TW':'最近記錄','ja':'最近の記録','ko':'최근 기록','es':'Registros recientes','fr':'Enregistrements récents','de':'Letzte Einträge','pt-BR':'Registros recentes','ru':'Последние записи','ar':'السجلات الأخيرة'},
+  'Key': {'zh-CN':'密钥','zh-TW':'金鑰','ja':'キー','ko':'키','es':'Clave','fr':'Clé','de':'Schlüssel','pt-BR':'Chave','ru':'Ключ','ar':'المفتاح'},
+  'Latency': {'zh-CN':'耗时','zh-TW':'耗時','ja':'レイテンシ','ko':'지연 시간','es':'Latencia','fr':'Latence','de':'Latenz','pt-BR':'Latência','ru':'Задержка','ar':'زمن الاستجابة'},
+  'Previous': {'zh-CN':'上一页','zh-TW':'上一頁','ja':'前へ','ko':'이전','es':'Anterior','fr':'Précédent','de':'Zurück','pt-BR':'Anterior','ru':'Назад','ar':'السابق'},
+  'Next': {'zh-CN':'下一页','zh-TW':'下一頁','ja':'次へ','ko':'다음','es':'Siguiente','fr':'Suivant','de':'Weiter','pt-BR':'Próximo','ru':'Далее','ar':'التالي'},
+  'Account management': {'zh-CN':'账号管理','zh-TW':'帳號管理','ja':'アカウント管理','ko':'계정 관리','es':'Gestión de cuentas','fr':'Gestion des comptes','de':'Kontoverwaltung','pt-BR':'Gerenciamento de contas','ru':'Управление аккаунтами','ar':'إدارة الحسابات'},
+  'Authorize and manage Microsoft accounts': {'zh-CN':'授权和管理 Microsoft 账号','zh-TW':'授權和管理 Microsoft 帳號','ja':'Microsoft アカウントの承認と管理','ko':'Microsoft 계정 인증 및 관리','es':'Autorizar y gestionar cuentas Microsoft','fr':'Autoriser et gérer les comptes Microsoft','de':'Microsoft-Konten autorisieren und verwalten','pt-BR':'Autorizar e gerenciar contas Microsoft','ru':'Авторизация и управление аккаунтами Microsoft','ar':'أذِن وإدارة حسابات Microsoft'},
+  'Click "Start authorization" below': {'zh-CN':'点击下方"开始授权"','zh-TW':'點擊下方「開始授權」','ja':'下の「承認を開始」をクリック','ko':'아래 "인증 시작" 클릭','es':'Haga clic en "Iniciar autorización" abajo','fr':'Cliquez sur « Démarrer l\'autorisation » ci-dessous','de':'Klicken Sie unten auf „Autorisierung starten"','pt-BR':'Clique em "Iniciar autorização" abaixo','ru':'Нажмите «Начать авторизацию» ниже','ar':'انقر "بدء التفويض" أدناه'},
+  'Your browser will open the Microsoft sign-in page': {'zh-CN':'浏览器将打开 Microsoft 登录页面','zh-TW':'瀏覽器將開啟 Microsoft 登入頁面','ja':'ブラウザで Microsoft サインインページが開きます','ko':'브라우저에서 Microsoft 로그인 페이지가 열립니다','es':'Su navegador abrirá la página de inicio de sesión de Microsoft','fr':'Votre navigateur ouvrira la page de connexion Microsoft','de':'Ihr Browser öffnet die Microsoft-Anmeldeseite','pt-BR':'Seu navegador abrirá a página de entrada da Microsoft','ru':'Браузер откроет страницу входа Microsoft','ar':'سيفتح متصفحك صفحة تسجيل دخول Microsoft'},
+  'Copy the full callback URL': {'zh-CN':'复制完整回调地址','zh-TW':'複製完整回呼位址','ja':'完全なコールバック URL をコピー','ko':'전체 콜백 URL 복사','es':'Copiar la URL de devolución completa','fr':'Copier l\'URL de rappel complète','de':'Vollständige Callback-URL kopieren','pt-BR':'Copie a URL de retorno completa','ru':'Скопируйте полный URL обратного вызова','ar':'انسخ عنوان URL الكامل لإعادة التوجيه'},
+  'After signing in, copy the full URL beginning with http from the address bar': {'zh-CN':'登录完成后，复制地址栏中以 http 开头的完整网址','zh-TW':'登入完成後，複製網址列中以 http 開頭的完整網址','ja':'サインイン後、アドレスバーから http で始まる完全な URL をコピー','ko':'로그인 후 주소창에서 http로 시작하는 전체 URL 복사','es':'Tras iniciar sesión, copie la URL completa que comienza con http desde la barra de direcciones','fr':'Après la connexion, copiez l\'URL complète commençant par http depuis la barre d\'adresse','de':'Kopieren Sie nach der Anmeldung die vollständige, mit http beginnende URL aus der Adressleiste','pt-BR':'Após entrar, copie a URL completa começando com http da barra de endereços','ru':'После входа скопируйте полный URL, начинающийся с http, из адресной строки','ar':'بعد تسجيل الدخول، انسخ عنوان URL الكامل الذي يبدأ بـ http من شريط العنوان'},
+  'Paste and confirm': {'zh-CN':'粘贴并确认','zh-TW':'貼上並確認','ja':'貼り付けて確認','ko':'붙여넣고 확인','es':'Pegar y confirmar','fr':'Coller et confirmer','de':'Einfügen und bestätigen','pt-BR':'Colar e confirmar','ru':'Вставить и подтвердить','ar':'الصق وأكد'},
+  'Paste it below and click "Confirm and add" to finish authorization': {'zh-CN':'粘贴到下方输入框，点击"确认添加"完成授权','zh-TW':'貼到下方輸入框，點擊「確認新增」完成授權','ja':'下の入力欄に貼り付けて「確認して追加」をクリックし、承認を完了','ko':'아래 입력란에 붙여넣고 "확인 및 추가"를 클릭하여 인증 완료','es':'Péguela abajo y haga clic en "Confirmar y añadir" para finalizar la autorización','fr':'Collez-la ci-dessous et cliquez sur « Confirmer et ajouter » pour terminer l\'autorisation','de':'Fügen Sie sie unten ein und klicken Sie auf „Bestätigen und hinzufügen", um die Autorisierung abzuschließen','pt-BR':'Cole abaixo e clique em "Confirmar e adicionar" para concluir a autorização','ru':'Вставьте его ниже и нажмите «Подтвердить и добавить», чтобы завершить авторизацию','ar':'الصقها أدناه وانقر "تأكيد وإضافة" لإكمال التفويض'},
+  'Start authorization': {'zh-CN':'开始授权','zh-TW':'開始授權','ja':'承認を開始','ko':'인증 시작','es':'Iniciar autorización','fr':'Démarrer l\'autorisation','de':'Autorisierung starten','pt-BR':'Iniciar autorização','ru':'Начать авторизацию','ar':'بدء التفويض'},
+  'Important': {'zh-CN':'重要提示','zh-TW':'重要提示','ja':'重要','ko':'중요','es':'Importante','fr':'Important','de':'Wichtig','pt-BR':'Importante','ru':'Важно','ar':'مهم'},
+  'After authorization,': {'zh-CN':'授权完成后请','zh-TW':'授權完成後請','ja':'承認後、','ko':'인증 후,','es':'Después de la autorización,','fr':'Après l\'autorisation,','de':'Nach der Autorisierung','pt-BR':'Após a autorização,','ru':'После авторизации','ar':'بعد التفويض،'},
+  'ignore the content of the popup page': {'zh-CN':'忽略弹出页面的内容','zh-TW':'忽略彈出頁面的內容','ja':'ポップアップページの内容は無視してください','ko':'팝업 페이지 내용 무시','es':'ignore el contenido de la página emergente','fr':'ignorez le contenu de la page contextuelle','de':'ignorieren Sie den Inhalt der Popup-Seite','pt-BR':'ignore o conteúdo da página pop-up','ru':'игнорируйте содержимое всплывающей страницы','ar':'تجاهل محتوى صفحة النافذة المنبثقة'},
+  'and copy the full callback URL from the browser address bar, including the': {'zh-CN':'，复制浏览器地址栏中完整的回调地址（包含','zh-TW':'，複製瀏覽器網址列中完整的回呼位址（包含','ja':'ブラウザのアドレスバーから完全なコールバック URL をコピーし、','ko':'브라우저 주소창에서 전체 콜백 URL을 복사하고','es':'y copie la URL de devolución completa de la barra de direcciones del navegador, incluidos los','fr':'et copiez l\'URL de rappel complète depuis la barre d\'adresse du navigateur, y compris les','de':'und kopieren Sie die vollständige Callback-URL aus der Browser-Adressleiste, einschließlich der','pt-BR':'e copie a URL de retorno completa da barra de endereços do navegador, incluindo os','ru':'и скопируйте полный URL обратного вызова из адресной строки браузера, включая','ar':'وانسخ عنوان URL الكامل لإعادة التوجيه من شريط عنوان المتصفح، بما في ذلك'},
+  'parameters.': {'zh-CN':'参数）。','zh-TW':'參數）。','ja':'パラメータを含めてください。','ko':'매개변수를 포함하세요.','es':'parámetros.','fr':'paramètres.','de':'Parameter.','pt-BR':'parâmetros.','ru':'параметры.','ar':'المعلمات.'},
+  'Callback URL': {'zh-CN':'回调地址','zh-TW':'回呼位址','ja':'コールバック URL','ko':'콜백 URL','es':'URL de devolución','fr':'URL de rappel','de':'Callback-URL','pt-BR':'URL de retorno','ru':'URL обратного вызова','ar':'عنوان URL لإعادة التوجيه'},
+  'Paste the full callback URL, e.g. https://app.example.com/api/auth/callback?code=...&state=...': {'zh-CN':'粘贴完整回调地址，例如 https://app.example.com/api/auth/callback?code=...&state=...','zh-TW':'貼上完整回呼位址，例如 https://app.example.com/api/auth/callback?code=...&state=...','ja':'完全なコールバック URL を貼り付け（例: https://app.example.com/api/auth/callback?code=...&state=...）','ko':'전체 콜백 URL 붙여넣기 (예: https://app.example.com/api/auth/callback?code=...&state=...)','es':'Pegue la URL de devolución completa, p. ej. https://app.example.com/api/auth/callback?code=...&state=...','fr':'Collez l\'URL de rappel complète, p. ex. https://app.example.com/api/auth/callback?code=...&state=...','de':'Vollständige Callback-URL einfügen, z. B. https://app.example.com/api/auth/callback?code=...&state=...','pt-BR':'Cole a URL de retorno completa, ex.: https://app.example.com/api/auth/callback?code=...&state=...','ru':'Вставьте полный URL обратного вызова, напр. https://app.example.com/api/auth/callback?code=...&state=...','ar':'الصق عنوان URL الكامل لإعادة التوجيه، مثل https://app.example.com/api/auth/callback?code=...&state=...'},
+  'Confirm and add': {'zh-CN':'确认添加','zh-TW':'確認新增','ja':'確認して追加','ko':'확인 및 추가','es':'Confirmar y añadir','fr':'Confirmer et ajouter','de':'Bestätigen und hinzufügen','pt-BR':'Confirmar e adicionar','ru':'Подтвердить и добавить','ar':'تأكيد وإضافة'},
+  'Authorized accounts': {'zh-CN':'已授权账号','zh-TW':'已授權帳號','ja':'承認済みアカウント','ko':'인증된 계정','es':'Cuentas autorizadas','fr':'Comptes autorisés','de':'Autorisierte Konten','pt-BR':'Contas autorizadas','ru':'Авторизованные аккаунты','ar':'الحسابات المفوضة'},
+  'Search accounts…': {'zh-CN':'搜索账号…','zh-TW':'搜尋帳號…','ja':'アカウントを検索…','ko':'계정 검색…','es':'Buscar cuentas…','fr':'Rechercher des comptes…','de':'Konten suchen…','pt-BR':'Pesquisar contas…','ru':'Поиск аккаунтов…','ar':'البحث عن الحسابات…'},
+  'All': {'zh-CN':'全部','zh-TW':'全部','ja':'すべて','ko':'전체','es':'Todos','fr':'Tous','de':'Alle','pt-BR':'Todos','ru':'Все','ar':'الكل'},
+  'Cooldown': {'zh-CN':'冷却','zh-TW':'冷卻','ja':'クールダウン','ko':'쿨다운','es':'Enfriamiento','fr':'Refroidissement','de':'Abkühlung','pt-BR':'Resfriamento','ru':'Ожидание','ar':'التهدئة'},
+  'Offline': {'zh-CN':'离线','zh-TW':'離線','ja':'オフライン','ko':'오프라인','es':'Sin conexión','fr':'Hors ligne','de':'Offline','pt-BR':'Offline','ru':'Не в сети','ar':'غير متصل'},
+  'Updated': {'zh-CN':'更新时间','zh-TW':'更新時間','ja':'更新日時','ko':'업데이트 시간','es':'Actualizado','fr':'Mis à jour','de':'Aktualisiert','pt-BR':'Atualizado','ru':'Обновлено','ar':'تم التحديث'},
+  'Actions': {'zh-CN':'操作','zh-TW':'操作','ja':'操作','ko':'작업','es':'Acciones','fr':'Actions','de':'Aktionen','pt-BR':'Ações','ru':'Действия','ar':'الإجراءات'},
+  'Manage access keys': {'zh-CN':'管理访问密钥','zh-TW':'管理存取金鑰','ja':'アクセスキーの管理','ko':'액세스 키 관리','es':'Gestionar claves de acceso','fr':'Gérer les clés d\'accès','de':'Zugriffsschlüssel verwalten','pt-BR':'Gerenciar chaves de acesso','ru':'Управление ключами доступа','ar':'إدارة مفاتيح الوصول'},
+  'Create key': {'zh-CN':'创建 Key','zh-TW':'建立 Key','ja':'キーを作成','ko':'키 생성','es':'Crear clave','fr':'Créer une clé','de':'Schlüssel erstellen','pt-BR':'Criar chave','ru':'Создать ключ','ar':'إنشاء مفتاح'},
+  'Key list': {'zh-CN':'密钥列表','zh-TW':'金鑰列表','ja':'キー一覧','ko':'키 목록','es':'Lista de claves','fr':'Liste des clés','de':'Schlüsselliste','pt-BR':'Lista de chaves','ru':'Список ключей','ar':'قائمة المفاتيح'},
+  'The full key is shown only once after creation': {'zh-CN':'仅创建时显示完整密钥','zh-TW':'僅建立時顯示完整金鑰','ja':'完全なキーは作成時にのみ表示されます','ko':'전체 키는 생성 시에만 표시됩니다','es':'La clave completa solo se muestra una vez tras la creación','fr':'La clé complète n\'est affichée qu\'une fois après la création','de':'Der vollständige Schlüssel wird nur einmal nach der Erstellung angezeigt','pt-BR':'A chave completa só é mostrada uma vez após a criação','ru':'Полный ключ отображается только один раз после создания','ar':'يظهر المفتاح الكامل مرة واحدة فقط بعد الإنشاء'},
+  'Name': {'zh-CN':'名称','zh-TW':'名稱','ja':'名前','ko':'이름','es':'Nombre','fr':'Nom','de':'Name','pt-BR':'Nome','ru':'Имя','ar':'الاسم'},
+  'Prefix': {'zh-CN':'前缀','zh-TW':'前綴','ja':'プレフィックス','ko':'접두사','es':'Prefijo','fr':'Préfixe','de':'Präfix','pt-BR':'Prefixo','ru':'Префикс','ar':'البادئة'},
+  'Created': {'zh-CN':'创建时间','zh-TW':'建立時間','ja':'作成日時','ko':'생성 시간','es':'Creado','fr':'Créé','de':'Erstellt','pt-BR':'Criado','ru':'Создан','ar':'تاريخ الإنشاء'},
+  'Last used': {'zh-CN':'最近使用','zh-TW':'最近使用','ja':'最終使用','ko':'마지막 사용','es':'Último uso','fr':'Dernière utilisation','de':'Zuletzt verwendet','pt-BR':'Último uso','ru':'Последнее использование','ar':'آخر استخدام'},
+  'Conversation management': {'zh-CN':'对话管理','zh-TW':'對話管理','ja':'会話管理','ko':'대화 관리','es':'Gestión de conversaciones','fr':'Gestion des conversations','de':'Unterhaltungsverwaltung','pt-BR':'Gerenciamento de conversas','ru':'Управление разговорами','ar':'إدارة المحادثات'},
+  'View and clean up M365 conversations': {'zh-CN':'查看和清理 M365 对话','zh-TW':'查看和清理 M365 對話','ja':'M365 会話の表示とクリーンアップ','ko':'M365 대화 보기 및 정리','es':'Ver y limpiar conversaciones de M365','fr':'Afficher et nettoyer les conversations M365','de':'M365-Unterhaltungen anzeigen und bereinigen','pt-BR':'Ver e limpar conversas M365','ru':'Просмотр и очистка разговоров M365','ar':'عرض وتنظيف محادثات M365'},
+  'Clean up all': {'zh-CN':'清理全部','zh-TW':'清理全部','ja':'すべてクリーンアップ','ko':'모두 정리','es':'Limpiar todo','fr':'Tout nettoyer','de':'Alles bereinigen','pt-BR':'Limpar tudo','ru':'Очистить всё','ar':'تنظيف الكل'},
+  'Clear': {'zh-CN':'清空','zh-TW':'清空','ja':'クリア','ko':'지우기','es':'Borrar','fr':'Effacer','de':'Leeren','pt-BR':'Limpar','ru':'Очистить','ar':'مسح'},
+  'Conversation list': {'zh-CN':'对话列表','zh-TW':'對話列表','ja':'会話一覧','ko':'대화 목록','es':'Lista de conversaciones','fr':'Liste des conversations','de':'Unterhaltungsliste','pt-BR':'Lista de conversas','ru':'Список разговоров','ar':'قائمة المحادثات'},
+  'Conversation ID': {'zh-CN':'对话 ID','zh-TW':'對話 ID','ja':'会話 ID','ko':'대화 ID','es':'ID de conversación','fr':'ID de conversation','de':'Unterhaltungs-ID','pt-BR':'ID da conversa','ru':'ID разговора','ar':'معرف المحادثة'},
+  'Messages': {'zh-CN':'消息数','zh-TW':'訊息數','ja':'メッセージ数','ko':'메시지 수','es':'Mensajes','fr':'Messages','de':'Nachrichten','pt-BR':'Mensagens','ru':'Сообщения','ar':'الرسائل'},
+  'Last updated': {'zh-CN':'最近更新','zh-TW':'最近更新','ja':'最終更新','ko':'최근 업데이트','es':'Última actualización','fr':'Dernière mise à jour','de':'Zuletzt aktualisiert','pt-BR':'Última atualização','ru':'Последнее обновление','ar':'آخر تحديث'},
+  'View': {'zh-CN':'查看','zh-TW':'檢視','ja':'表示','ko':'보기','es':'Ver','fr':'Voir','de':'Anzeigen','pt-BR':'Ver','ru':'Открыть','ar':'عرض'},
+  'Configure outbound proxies with http / https / socks5 and automatic failover': {'zh-CN':'配置出口代理，支持 http / https / socks5，故障自动切换','zh-TW':'設定出口代理，支援 http / https / socks5，故障自動切換','ja':'http / https / socks5 の送信プロキシを設定し、障害時は自動フェイルオーバー','ko':'http / https / socks5 발신 프록시 구성 및 자동 장애 조치','es':'Configure proxies de salida con http / https / socks5 y conmutación automática por error','fr':'Configurez des proxys sortants http / https / socks5 avec bascule automatique','de':'Ausgehende Proxys mit http / https / socks5 und automatischem Failover konfigurieren','pt-BR':'Configure proxies de saída com http / https / socks5 e failover automático','ru':'Настройте исходящие прокси http / https / socks5 с автоматическим переключением','ar':'قم بتكوين بروكسيات الخروج http / https / socks5 مع التبديل التلقائي'},
+  'Check all': {'zh-CN':'全部健康检查','zh-TW':'全部健康檢查','ja':'すべてチェック','ko':'전체 확인','es':'Comprobar todo','fr':'Tout vérifier','de':'Alle prüfen','pt-BR':'Verificar tudo','ru':'Проверить все','ar':'فحص الكل'},
+  'Add proxy': {'zh-CN':'添加代理','zh-TW':'新增代理','ja':'プロキシを追加','ko':'프록시 추가','es':'Añadir proxy','fr':'Ajouter un proxy','de':'Proxy hinzufügen','pt-BR':'Adicionar proxy','ru':'Добавить прокси','ar':'إضافة بروكسي'},
+  'Proxy URLs (one per line; bulk paste supported)': {'zh-CN':'代理地址（一行一个，支持批量粘贴）','zh-TW':'代理位址（一行一個，支援批量貼上）','ja':'プロキシ URL（1 行 1 件、一括貼り付け対応）','ko':'프록시 URL (한 줄에 하나, 일괄 붙여넣기 지원)','es':'URLs de proxy (una por línea; se admite pegado masivo)','fr':'URLs de proxy (une par ligne ; collage en masse pris en charge)','de':'Proxy-URLs (eine pro Zeile; Masseneinfügen unterstützt)','pt-BR':'URLs de proxy (uma por linha; colagem em massa suportada)','ru':'URL прокси (по одному в строке; поддерживается массовая вставка)','ar':'عناوين البروكسي (واحد لكل سطر؛ دعم اللصق الجماعي)'},
+  'Add': {'zh-CN':'添加','zh-TW':'新增','ja':'追加','ko':'추가','es':'Añadir','fr':'Ajouter','de':'Hinzufügen','pt-BR':'Adicionar','ru':'Добавить','ar':'إضافة'},
+  'Test connectivity': {'zh-CN':'测试连通性','zh-TW':'測試連通性','ja':'接続をテスト','ko':'연결 테스트','es':'Probar conectividad','fr':'Tester la connexion','de':'Konnektivität testen','pt-BR':'Testar conectividade','ru':'Проверить связь','ar':'اختبار الاتصال'},
+  'Supported formats: ': {'zh-CN':'已支持的格式：','zh-TW':'已支援的格式：','ja':'対応フォーマット: ','ko':'지원 형식: ','es':'Formatos admitidos: ','fr':'Formats pris en charge : ','de':'Unterstützte Formate: ','pt-BR':'Formatos suportados: ','ru':'Поддерживаемые форматы: ','ar':'الصيغ المدعومة: '},
+  ', and ': {'zh-CN':'、','zh-TW':'、','ja':'、','ko':', ','es':', y ','fr':', et ','de':', und ','pt-BR':', e ','ru':', и ','ar':'، و'},
+  '; usernames and passwords are supported': {'zh-CN':'，可带用户名密码','zh-TW':'，可帶使用者名稱密碼','ja':'；ユーザー名とパスワードに対応','ko':'; 사용자 이름 및 비밀번호 지원','es':'; se admiten nombres de usuario y contraseñas','fr':'; noms d\'utilisateur et mots de passe pris en charge','de':'; Benutzernamen und Passwörter werden unterstützt','pt-BR':'; nomes de usuário e senhas são suportados','ru':'; поддерживаются имена пользователей и пароли','ar':'؛ يُدعم أسماء المستخدمين وكلمات المرور'},
+  'Proxy list': {'zh-CN':'代理列表','zh-TW':'代理列表','ja':'プロキシ一覧','ko':'프록시 목록','es':'Lista de proxies','fr':'Liste des proxys','de':'Proxy-Liste','pt-BR':'Lista de proxies','ru':'Список прокси','ar':'قائمة البروكسي'},
+  'URL': {'zh-CN':'地址','zh-TW':'位址','ja':'URL','ko':'URL','es':'URL','fr':'URL','de':'URL','pt-BR':'URL','ru':'URL','ar':'العنوان'},
+  'Failures': {'zh-CN':'失败次数','zh-TW':'失敗次數','ja':'失敗回数','ko':'실패 횟수','es':'Fallos','fr':'Échecs','de':'Fehlversuche','pt-BR':'Falhas','ru':'Сбои','ar':'مرات الفشل'},
+  'Cooldown until': {'zh-CN':'冷却至','zh-TW':'冷卻至','ja':'クールダウンまで','ko':'쿨다운까지','es':'Enfriamiento hasta','fr':'Temps d\'attente jusqu\'à','de':'Abkühlung bis','pt-BR':'Resfriamento até','ru':'До окончания ожидания','ar':'حتى انتهاء التهدئة'},
+  'Send a minimal request to each model to verify availability': {'zh-CN':'对各模型发送最小请求，验证可用性','zh-TW':'對各模型傳送最小要求，驗證可用性','ja':'各モデルに最小リクエストを送信して可用性を確認','ko':'각 모델에 최소 요청을 보내 가용성 확인','es':'Envíe una solicitud mínima a cada modelo para verificar su disponibilidad','fr':'Envoyez une requête minimale à chaque modèle pour vérifier la disponibilité','de':'Senden Sie eine minimale Anfrage an jedes Modell, um die Verfügbarkeit zu prüfen','pt-BR':'Envie uma solicitação mínima a cada modelo para verificar a disponibilidade','ru':'Отправьте минимальный запрос каждой модели для проверки доступности','ar':'أرسل طلبًا بسيطًا لكل نموذج للتحقق من توفره'},
+  'Test all': {'zh-CN':'测试全部','zh-TW':'測試全部','ja':'すべてテスト','ko':'모두 테스트','es':'Probar todo','fr':'Tout tester','de':'Alle testen','pt-BR':'Testar tudo','ru':'Протестировать все','ar':'اختبار الكل'},
+  'Reply': {'zh-CN':'回复','zh-TW':'回覆','ja':'返信','ko':'답변','es':'Respuesta','fr':'Réponse','de':'Antwort','pt-BR':'Resposta','ru':'Ответ','ar':'الرد'},
+  'Listen address': {'zh-CN':'监听地址','zh-TW':'監聽位址','ja':'リスニングアドレス','ko':'수신 주소','es':'Dirección de escucha','fr':'Adresse d\'écoute','de':'Lauschadresse','pt-BR':'Endereço de escuta','ru':'Адрес прослушивания','ar':'عنوان الاستماع'},
+  'Chat timeout (seconds)': {'zh-CN':'聊天超时（秒）','zh-TW':'聊天逾時（秒）','ja':'チャットタイムアウト（秒）','ko':'채팅 시간 초과(초)','es':'Tiempo de espera de chat (segundos)','fr':'Délai de chat (secondes)','de':'Chat-Timeout (Sekunden)','pt-BR':'Tempo limite do chat (segundos)','ru':'Тайм-аут чата (сек.)','ar':'مهلة الدردشة (ثوانٍ)'},
+  'Language': {'zh-CN':'语言','zh-TW':'語言','ja':'言語','ko':'언어','es':'Idioma','fr':'Langue','de':'Sprache','pt-BR':'Idioma','ru':'Язык','ar':'اللغة'},
+  'Save settings': {'zh-CN':'保存设置','zh-TW':'儲存設定','ja':'設定を保存','ko':'설정 저장','es':'Guardar ajustes','fr':'Enregistrer les paramètres','de':'Einstellungen speichern','pt-BR':'Salvar configurações','ru':'Сохранить настройки','ar':'حفظ الإعدادات'},
+  'Choose the language used by the administration console.': {'zh-CN':'选择管理控制台使用的语言。','zh-TW':'選擇管理主控台使用的語言。','ja':'管理コンソールで使用する言語を選択してください。','ko':'관리 콘솔에서 사용할 언어를 선택하세요.','es':'Elija el idioma que usará la consola de administración.','fr':'Choisissez la langue utilisée par la console d\'administration.','de':'Wählen Sie die Sprache, die von der Administrationskonsole verwendet wird.','pt-BR':'Escolha o idioma usado pelo console de administração.','ru':'Выберите язык, используемый консолью администратора.','ar':'اختر اللغة المستخدمة في وحدة تحكم الإدارة.'},
+  'Create API key': {'zh-CN':'创建 API Key','zh-TW':'建立 API Key','ja':'API キーを作成','ko':'API 키 생성','es':'Crear clave API','fr':'Créer une clé API','de':'API-Schlüssel erstellen','pt-BR':'Criar chave API','ru':'Создать API-ключ','ar':'إنشاء مفتاح API'},
+  'The key is shown only once. Store it securely.': {'zh-CN':'密钥只显示一次，请妥善保存','zh-TW':'金鑰只顯示一次，請妥善保存','ja':'キーは一度だけ表示されます。安全に保管してください。','ko':'키는 한 번만 표시됩니다. 안전하게 보관하세요.','es':'La clave solo se muestra una vez. Guárdela de forma segura.','fr':'La clé n\'est affichée qu\'une fois. Conservez-la en lieu sûr.','de':'Der Schlüssel wird nur einmal angezeigt. Bewahren Sie ihn sicher auf.','pt-BR':'A chave só é mostrada uma vez. Guarde-a com segurança.','ru':'Ключ отображается только один раз. Храните его безопасно.','ar':'يظهر المفتاح مرة واحدة فقط. احفظه بأمان.'},
+  'Cancel': {'zh-CN':'取消','zh-TW':'取消','ja':'キャンセル','ko':'취소','es':'Cancelar','fr':'Annuler','de':'Abbrechen','pt-BR':'Cancelar','ru':'Отмена','ar':'إلغاء'},
+  'Create': {'zh-CN':'创建','zh-TW':'建立','ja':'作成','ko':'생성','es':'Crear','fr':'Créer','de':'Erstellen','pt-BR':'Criar','ru':'Создать','ar':'إنشاء'},
+  'Copy and save this key now': {'zh-CN':'请立即复制保存此密钥','zh-TW':'請立即複製儲存此金鑰','ja':'今すぐこのキーをコピーして保存','ko':'지금 이 키를 복사하여 저장하세요','es':'Copie y guarde esta clave ahora','fr':'Copiez et enregistrez cette clé maintenant','de':'Kopieren und speichern Sie diesen Schlüssel jetzt','pt-BR':'Copie e salve esta chave agora','ru':'Скопируйте и сохраните этот ключ сейчас','ar':'انسخ واحفظ هذا المفتاح الآن'},
+  'Edit API key': {'zh-CN':'编辑 API Key','zh-TW':'編輯 API Key','ja':'API キーを編集','ko':'API 키 편집','es':'Editar clave API','fr':'Modifier la clé API','de':'API-Schlüssel bearbeiten','pt-BR':'Editar chave API','ru':'Редактировать API-ключ','ar':'تحرير مفتاح API'},
+  'Change the key name': {'zh-CN':'修改密钥名称','zh-TW':'修改金鑰名稱','ja':'キー名を変更','ko':'키 이름 변경','es':'Cambiar el nombre de la clave','fr':'Modifier le nom de la clé','de':'Schlüsselnamen ändern','pt-BR':'Alterar o nome da chave','ru':'Изменить имя ключа','ar':'تغيير اسم المفتاح'},
+  'Save': {'zh-CN':'保存','zh-TW':'儲存','ja':'保存','ko':'저장','es':'Guardar','fr':'Enregistrer','de':'Speichern','pt-BR':'Salvar','ru':'Сохранить','ar':'حفظ'},
+  'Use API key': {'zh-CN':'使用 API 密钥','zh-TW':'使用 API 金鑰','ja':'API キーを使用','ko':'API 키 사용','es':'Usar clave API','fr':'Utiliser la clé API','de':'API-Schlüssel verwenden','pt-BR':'Usar chave API','ru':'Использовать API-ключ','ar':'استخدام مفتاح API'},
+  'No requests yet': {'zh-CN':'暂无请求记录','zh-TW':'暫無要求記錄','ja':'リクエスト記録はありません','ko':'요청 기록 없음','es':'Aún no hay solicitudes','fr':'Aucune requête pour l\'instant','de':'Noch keine Anfragen','pt-BR':'Nenhuma solicitação ainda','ru':'Пока нет запросов','ar':'لا توجد طلبات بعد'},
+  'Success': {'zh-CN':'成功','zh-TW':'成功','ja':'成功','ko':'성공','es':'Éxito','fr':'Succès','de':'Erfolg','pt-BR':'Sucesso','ru':'Успех','ar':'نجاح'},
+  'Error': {'zh-CN':'错误','zh-TW':'錯誤','ja':'エラー','ko':'오류','es':'Error','fr':'Erreur','de':'Fehler','pt-BR':'Erro','ru':'Ошибка','ar':'خطأ'},
+  'No matching accounts': {'zh-CN':'暂无匹配账号','zh-TW':'暫無符合帳號','ja':'一致するアカウントはありません','ko':'일치하는 계정 없음','es':'No hay cuentas coincidentes','fr':'Aucun compte correspondant','de':'Keine passenden Konten','pt-BR':'Nenhuma conta correspondente','ru':'Нет подходящих аккаунтов','ar':'لا توجد حسابات مطابقة'},
+  'Delete': {'zh-CN':'删除','zh-TW':'刪除','ja':'削除','ko':'삭제','es':'Eliminar','fr':'Supprimer','de':'Löschen','pt-BR':'Excluir','ru':'Удалить','ar':'حذف'},
+  'No API keys': {'zh-CN':'暂无 API Key','zh-TW':'暫無 API Key','ja':'API キーはありません','ko':'API 키 없음','es':'No hay claves API','fr':'Aucune clé API','de':'Keine API-Schlüssel','pt-BR':'Nenhuma chave API','ru':'Нет API-ключей','ar':'لا توجد مفاتيح API'},
+  'Active': {'zh-CN':'有效','zh-TW':'有效','ja':'有効','ko':'활성','es':'Activo','fr':'Actif','de':'Aktiv','pt-BR':'Ativo','ru':'Активен','ar':'نشط'},
+  'Disabled': {'zh-CN':'已禁用','zh-TW':'已停用','ja':'無効','ko':'비활성','es':'Deshabilitado','fr':'Désactivé','de':'Deaktiviert','pt-BR':'Desativado','ru':'Отключен','ar':'معطل'},
+  'Enable': {'zh-CN':'启用','zh-TW':'啟用','ja':'有効にする','ko':'활성화','es':'Habilitar','fr':'Activer','de':'Aktivieren','pt-BR':'Ativar','ru':'Включить','ar':'تفعيل'},
+  'No conversations': {'zh-CN':'暂无对话','zh-TW':'暫無對話','ja':'会話はありません','ko':'대화 없음','es':'No hay conversaciones','fr':'Aucune conversation','de':'Keine Unterhaltungen','pt-BR':'Nenhuma conversa','ru':'Нет разговоров','ar':'لا توجد محادثات'},
+  'No proxies; requests will connect directly': {'zh-CN':'暂无代理，请求将直连','zh-TW':'暫無代理，要求將直連','ja':'プロキシなし。リクエストは直接接続されます','ko':'프록시 없음. 요청은 직접 연결됩니다','es':'Sin proxies; las solicitudes se conectarán directamente','fr':'Aucun proxy ; les requêtes se connecteront directement','de':'Keine Proxys; Anfragen werden direkt verbunden','pt-BR':'Sem proxies; solicitações se conectarão diretamente','ru':'Нет прокси; запросы будут подключаться напрямую','ar':'لا توجد بروكسيات؛ ستتصل الطلبات مباشرة'},
+  'No models available': {'zh-CN':'暂无可用模型','zh-TW':'暫無可用模型','ja':'利用可能なモデルはありません','ko':'사용 가능한 모델 없음','es':'No hay modelos disponibles','fr':'Aucun modèle disponible','de':'Keine Modelle verfügbar','pt-BR':'Nenhum modelo disponível','ru':'Нет доступных моделей','ar':'لا توجد نماذج متاحة'},
+  'Not tested': {'zh-CN':'未测试','zh-TW':'未測試','ja':'未テスト','ko':'미테스트','es':'Sin probar','fr':'Non testé','de':'Nicht getestet','pt-BR':'Não testado','ru':'Не протестирован','ar':'لم يتم اختباره'},
+  'No trend data yet; it will appear after requests are made.': {'zh-CN':'暂无趋势数据，产生请求后自动生成','zh-TW':'暫無趨勢資料，產生要求後自動產生','ja':'トレンドデータはまだありません。リクエスト後に表示されます','ko':'추세 데이터 없음. 요청 후 표시됩니다','es':'Aún no hay datos de tendencia; aparecerán tras las solicitudes','fr':'Pas encore de données de tendance ; elles apparaîtront après les requêtes','de':'Noch keine Trenddaten; sie erscheinen nach Anfragen','pt-BR':'Sem dados de tendência ainda; aparecerão após solicitações','ru':'Пока нет данных о трендах; они появятся после запросов','ar':'لا توجد بيانات اتجاهات بعد؛ ستظهر بعد إجراء الطلبات'},
+  'No data': {'zh-CN':'暂无数据','zh-TW':'暫無資料','ja':'データはありません','ko':'데이터 없음','es':'Sin datos','fr':'Aucune donnée','de':'Keine Daten','pt-BR':'Sem dados','ru':'Нет данных','ar':'لا توجد بيانات'},
+  'Healthy': {'zh-CN':'正常','zh-TW':'正常','ja':'正常','ko':'정상','es':'Saludable','fr':'Sain','de':'Gesund','pt-BR':'Saudável','ru':'Работает','ar':'سليم'},
+  'Unreachable': {'zh-CN':'不可达','zh-TW':'不可達','ja':'到達不能','ko':'연결 불가','es':'Inaccesible','fr':'Injoignable','de':'Nicht erreichbar','pt-BR':'Inacessível','ru':'Недоступен','ar':'غير قابل للوصول'},
+  'Upstream error': {'zh-CN':'上游异常','zh-TW':'上游異常','ja':'アップストリームエラー','ko':'업스트림 오류','es':'Error de origen','fr':'Erreur en amont','de':'Upstream-Fehler','pt-BR':'Erro de origem','ru':'Ошибка вышестоящего сервиса','ar':'خطأ المنبع'},
+  'Not checked': {'zh-CN':'未检测','zh-TW':'未檢測','ja':'未確認','ko':'확인 안 됨','es':'Sin comprobar','fr':'Non vérifié','de':'Nicht geprüft','pt-BR':'Não verificado','ru':'Не проверено','ar':'لم يتم التحقق'},
+  'Cooling down': {'zh-CN':'冷却中','zh-TW':'冷卻中','ja':'クールダウン中','ko':'쿨다운 중','es':'Enfriando','fr':'En attente','de':'Wird abgekühlt','pt-BR':'Resfriando','ru':'Ожидание','ar':'جارٍ التهدئة'},
+  'Testing…': {'zh-CN':'测试中…','zh-TW':'測試中…','ja':'テスト中…','ko':'테스트 중…','es':'Probando…','fr':'Test en cours…','de':'Wird getestet…','pt-BR':'Testando…','ru':'Тестирование…','ar':'جارٍ الاختبار…'},
+  'Failed': {'zh-CN':'失败','zh-TW':'失敗','ja':'失敗','ko':'실패','es':'Fallido','fr':'Échec','de':'Fehlgeschlagen','pt-BR':'Falhou','ru':'Ошибка','ar':'فشل'}
+};
+function preferredLocale(){
+  try{
+    const stored=localStorage.getItem(localeStorageKey);
+    if(stored==='en'&&localStorage.getItem(localeSelectionKey)==='1')return 'en';
+    if(stored&&stored!=='en'&&SUPPORTED_LOCALES.includes(stored))return stored;
+  }catch(e){}
+  return 'zh-CN';
+}
+let currentLocale=preferredLocale();
+let localeObserver=null;
+function localeReverse(){const out={};Object.entries(localeText).forEach(([en,v])=>{if(v&&typeof v==='object'){Object.values(v).forEach(t=>{if(t&&!out[t])out[t]=en;});}else if(v&&!out[v]){out[v]=en;}});return out;}
+const localeTextReverse=localeReverse();
+function translateDynamic(value,locale){
+  if(!value)return value;
+  if(locale==='zh'||locale.startsWith('zh')){
+    let m=value.match(/^Called (\d+) times$/);if(m)return locale==='zh-TW'?'已呼叫'+m[1]+'次':'已调用'+m[1]+'次';
+    m=value.match(/^Limited after (\d+) calls$/);if(m)return locale==='zh-TW'?'呼叫'+m[1]+'次限流':'调用'+m[1]+'次限流';
+    m=value.match(/^(\d+) requests today$/);if(m)return '今日 '+m[1]+' 次请求';
+    m=value.match(/^(\d+) requests$/);if(m)return m[1]+' 次请求';
+    m=value.match(/^Hit rate (.+)$/);if(m)return '命中率 '+m[1];
+    m=value.match(/^Today \+(\d+)$/);if(m)return '今日 +'+m[1];
+    m=value.match(/^Input (\d+) · Output (\d+)$/);if(m)return '输入 '+m[1]+' · 输出 '+m[2];
+    m=value.match(/^in(\d+)\/out(\d+)\/cache(\d+)$/);if(m)return '入'+m[1]+'/出'+m[2]+'/缓'+m[3];
+    m=value.match(/^Page (\d+) \/ (\d+) · (\d+) total$/);if(m)return '第 '+m[1]+' / '+m[2]+' 页 · 共 '+m[3]+' 条';
+    m=value.match(/^Added (\d+) proxies$/);if(m)return '已添加 '+m[1]+' 个代理';
+    m=value.match(/^Connection healthy: (.+)$/);if(m)return '连通正常：'+m[1];
+    m=value.match(/^Finished: (\d+) succeeded, (\d+) failed, (\d+) rounds total\.$/);if(m)return '完成：成功 '+m[1]+' 个，失败 '+m[2]+' 个，共 '+m[3]+' 轮。';
+  }else{
+    let m=value.match(/^已调用(\d+)次$/);if(m)return 'Called '+m[1]+' times';
+    m=value.match(/^已呼叫(\d+)次$/);if(m)return 'Called '+m[1]+' times';
+    m=value.match(/^调用(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
+    m=value.match(/^呼叫(\d+)次限流$/);if(m)return 'Limited after '+m[1]+' calls';
+    m=value.match(/^今日 (\d+) 次请求$/);if(m)return m[1]+' requests today';
+    m=value.match(/^(\d+) 次请求$/);if(m)return m[1]+' requests';
+    m=value.match(/^命中率 (.+)$/);if(m)return 'Hit rate '+m[1];
+    m=value.match(/^今日 \+(\d+)$/);if(m)return 'Today +'+m[1];
+    m=value.match(/^输入 (\d+) · 输出 (\d+)$/);if(m)return 'Input '+m[1]+' · Output '+m[2];
+    m=value.match(/^入(\d+)\/出(\d+)\/缓(\d+)$/);if(m)return 'in'+m[1]+'/out'+m[2]+'/cache'+m[3];
+    m=value.match(/^第 (\d+) \/ (\d+) 页 · 共 (\d+) 条$/);if(m)return 'Page '+m[1]+' / '+m[2]+' · '+m[3]+' total';
+    m=value.match(/^已添加 (\d+) 个代理$/);if(m)return 'Added '+m[1]+' proxies';
+    m=value.match(/^连通正常：(.+)$/);if(m)return 'Connection healthy: '+m[1];
+    m=value.match(/^完成：成功 (\d+) 个，失败 (\d+) 个，共 (\d+) 轮。$/);if(m)return 'Finished: '+m[1]+' succeeded, '+m[2]+' failed, '+m[3]+' rounds total.';
+  }
+  return value;
+}
+function translateText(value){
+  const trimmed=value.trim();
+  if(!trimmed)return value;
+  let translated;
+  if(currentLocale==='en'){
+    translated=localeTextReverse[trimmed]||translateDynamic(trimmed,'en');
+  }else{
+    const entry=localeText[trimmed];
+    translated=(entry&&entry[currentLocale])||translateDynamic(trimmed,currentLocale)||localeText[trimmed]?.['en'];
+  }
+  if(!translated||translated===trimmed)return value;
+  return value.replace(trimmed,translated);
+}
+function translatePage(){
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  const nodes=[];let node;
+  while(node=walker.nextNode()){if(!node.parentElement?.closest('script,style,pre,code,textarea'))nodes.push(node);}
+  nodes.forEach(n=>{const translated=translateText(n.nodeValue);if(translated!==n.nodeValue)n.nodeValue=translated;});
+  document.querySelectorAll('[placeholder],[title],[aria-label],[data-label]').forEach(el=>['placeholder','title','aria-label','data-label'].forEach(attr=>{if(el.hasAttribute(attr))el.setAttribute(attr,translateText(el.getAttribute(attr)));}));
+  const selector=$('languageSelect');if(selector)selector.value=currentLocale;
+  document.documentElement.lang=currentLocale;
+  document.documentElement.dir=currentLocale==='ar'?'rtl':'ltr';
+}
+function applyLocale(locale){
+  if(!SUPPORTED_LOCALES.includes(locale))locale='en';
+  currentLocale=locale;
+  try{localStorage.setItem(localeStorageKey,currentLocale);}catch(e){}
+  translatePage();
+  if(!localeObserver){localeObserver=new MutationObserver(()=>translatePage());localeObserver.observe(document.body,{childList:true,subtree:true,characterData:true});}
+}
+applyLocale(currentLocale);
+document.addEventListener('change',e=>{
+  if(e.target?.id==='languageSelect'){
+    try{localStorage.setItem(localeSelectionKey,'1');}catch(err){}
+    applyLocale(e.target.value);
+  }
+});
+let pkceTimer=null;
+
+function showNotice(msg,type='info'){
+  const el=$('notice');
+  el.textContent=msg;
+  el.className='notice '+type;
+  el.style.display='block';
+  setTimeout(()=>el.style.display='none',3000);
+}
+
+function showPage(p){
+  ['dashboard','usage','accounts','apikeys','conversations','proxies','modeltest','settings'].forEach(k=>{
+    $('page-'+k).style.display=k===p?'block':'none';
+    document.querySelector('[data-page="'+k+'"]')?.classList.toggle('active',k===p);
+  });
+  $('pageTitle').textContent=pages[p];
+  if(p==='dashboard'){loadStats();loadOnboarding();}
+  if(p==='usage')loadUsage();
+  if(p==='accounts')loadAccounts();
+  if(p==='apikeys')loadKeys();
+  if(p==='conversations')loadConversations();
+  if(p==='proxies')loadProxies();
+  if(p==='modeltest')loadModelTest();
+  if(p==='settings')loadSettings();
+}
+
+let onboardingHidden=false;
+function toggleOnboarding(){
+  onboardingHidden=!onboardingHidden;
+  $('onboarding').style.display=onboardingHidden?'none':'block';
+  try{localStorage.setItem('onb_hidden',onboardingHidden?'1':'0');}catch(e){}
+}
+function onbStep1(){showPage('accounts');setTimeout(()=>{startPKCE();document.querySelector('#page-accounts')?.scrollIntoView({behavior:'smooth'});},150);}
+function onbStep2(){openKeyModal();}
+function onbStep3(){document.querySelector('#page-dashboard .onb-curl')?.scrollIntoView({behavior:'smooth',block:'center'});}
+
+function buildCurl(keyPrefix){
+  const base=location.origin;
+  return `curl ${base}/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer ${keyPrefix}..." \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Say hello in one sentence."}]}'`;
+}
+async function copyCurl(){
+  try{await navigator.clipboard.writeText($('onbCurl').textContent.trim());showNotice('curl 已复制','success');}catch(e){}
+}
+async function loadOnboarding(){
+  let acc=0,key=0,prefix='sk-';
+  try{const d=await api('/api/accounts');acc=(d.accounts||[]).length;}
+  catch(e){}
+  try{const d=await api('/api/admin/keys');const k=(d.keys||[]).filter(x=>!x.revoked);key=k.length;if(k[0])prefix=k[0].prefix;}
+  catch(e){}
+  $('onbStatusAcc').textContent=acc;
+  $('onbStatusKey').textContent=key;
+  $('onb-n1').textContent=acc?'✓':'1';
+  $('onb-s1').classList.toggle('done',acc>0);
+  $('onb-n2').textContent=key?'✓':'2';
+  $('step-s2').classList.toggle('done',key>0);
+  $('onbCurl').textContent=buildCurl(prefix);
+  try{if(localStorage.getItem('onb_hidden')==='1'){onboardingHidden=true;$('onboarding').style.display='none';}}catch(e){}
+}
+
+async function api(path,opts={}){
+  opts.headers={'Content-Type':'application/json',...(opts.headers||{})};
+  const r=await fetch(path,opts);
+  const t=await r.text();
+  let d;try{d=t?JSON.parse(t):{}}catch{d={error:{message:t}}};
+  if(!r.ok)throw Error(d?.error?.message||t||'Request failed');
+  return d;
+}
+
+$('loginForm')?.addEventListener('submit',async e=>{
+  e.preventDefault();
+  try{
+    const d=await api('/api/admin/login',{method:'POST',body:JSON.stringify({password:$('loginPassword').value})});
+    if(d.must_change_password){location.replace('/login');return;}
+    $('login').style.display='none';$('app').style.display='flex';
+    showPage('dashboard');loadStats();
+    showNotice('登录成功','success');
+  }catch(e){showNotice(e.message,'error');}
+});
+
+async function logout(){
+  await fetch('/api/admin/logout',{method:'POST'});
+  location.reload();
+}
+
+async function loadStats(){
+  try{
+    const [d,u]=await Promise.all([api('/api/stats'),api('/api/usage?days=365')]);
+    const s=d.stats||{};
+    $('stat-sessions').textContent=(s.total_requests||0);
+    $('stat-hits').textContent=(s.cache_hits||0);
+    $('stat-rate').textContent=(s.hit_rate||0).toFixed(1);
+    $('stat-saved').textContent=(s.tokens_saved||0);
+    $('ovCacheHits').textContent=fmtTok(s.cache_hits||0);
+    $('ovCacheRate').textContent='Hit rate '+((s.hit_rate||0)).toFixed(1)+'%';
+    const sum=(u.stats||{}).summary||{};
+    $('ov24hTok').textContent=fmtTok(sum.last24h_tokens||0);
+    $('ov24hReq').textContent=(sum.last24h_requests||0)+' requests';
+    $('ovTotalTok').textContent=fmtTok(sum.tokens||0);
+    $('ovTotalReq').textContent=(sum.requests||0)+' requests';
+    $('ovTodayTok').textContent=fmtTok(sum.today_tokens||0);
+    $('ovTodayReq').textContent=(sum.today_requests||0)+' requests today';
+    loadRecentRequests();
+  }catch(e){}
+}
+
+async function loadRecentRequests(){
+  try{
+    const d=await api('/api/usage/logs?limit=6&offset=0');
+    const rows=(d.logs||[]).map(x=>{
+      const status=usageStatusInfo(x);
+      const parsedTime=new Date(x.time);
+      const timeText=Number.isNaN(parsedTime.getTime())?String(x.time||'-'):parsedTime.toLocaleString();
+      const endpoint=String(x.endpoint||'-').replace(/^\/v1\//,'');
+      const tokenTotal=(Number(x.input_tokens)||0)+(Number(x.tool_tokens)||0)+(Number(x.output_tokens)||0)+(Number(x.cache_tokens)||0);
+      return `<tr>
+        <td style="font-size:12px;color:var(--muted)">${esc(timeText)}</td>
+        <td style="font-size:12px">${esc(x.model||'-')}</td>
+        <td><span class="usage-status">${esc(endpoint)}</span></td>
+        <td><span class="token-stack"><b>${esc(tokenTotal)}</b></span></td>
+        <td><span class="usage-status ${status.cssClass}">${esc(status.label)}</span></td>
+      </tr>`;
+    }).join('');
+    $('dashRecentRows').innerHTML=rows||'<tr><td colspan="5" class="empty">No requests yet</td></tr>';
+  }catch(e){$('dashRecentRows').innerHTML=`<tr><td colspan="5" class="empty">No requests yet</td></tr>`;}
+}
+
+let _accountsCache=[],_accountFilter='all';
+function setAccountFilter(f){_accountFilter=f;document.querySelectorAll('#accountFilter button').forEach(b=>b.classList.toggle('active',b.dataset.f===f));renderAccounts();}
+function renderAccounts(){
+  const q=($('accountSearch').value||'').trim().toLowerCase();
+  const list=_accountsCache.filter(x=>{
+    if(_accountFilter==='online'&&x.status!=='online')return false;
+    if(_accountFilter==='cooldown'&&x.status!=='cooldown')return false;
+    if(_accountFilter==='offline'&&(x.status==='online'||x.status==='cooldown'))return false;
+    if(q&&!((x.displayName||'')+' '+(x.email||'')).toLowerCase().includes(q))return false;
+    return true;
+  });
+  $('accountRows').innerHTML=list.length?list.map(x=>{
+    const cooldown=x.cooldownUntil?`<div style="font-size:11px;color:var(--muted);margin-top:3px"><span>Cooldown until</span> ${new Date(x.cooldownUntil).toLocaleString()}</div>`:'';
+    const status=x.status==='cooldown'?`<div><span class="status cooldown"><i></i>Cooldown</span>${cooldown}</div>`:x.status==='online'?'<span class="status online"><i></i>Online</span>':'<span class="status offline"><i></i>Offline</span>';
+    const calls=x.rateLimited?`Limited after ${x.callCount||0} calls`:`Called ${x.callCount||0} times`;
+    const scheduleEnabled=x.scheduleEnabled!==false;
+    const proxyLabel=x.boundProxy?`<span style="font-size:11px;word-break:break-all">${esc(x.boundProxy)}</span>`:'<span style="color:var(--muted);font-size:11px">—</span>';
+    return `<tr><td><div class="account-cell"><div class="avatar">${(x.displayName||x.email||'M')[0]}</div><div><b>${x.displayName||x.email}</b><div style="font-size:11px;color:var(--muted)">${x.email||''}</div></div></div></td><td style="font-size:12px;white-space:nowrap">${calls}</td><td>${status}</td><td style="font-size:12px;color:var(--muted)">${x.updatedAt?new Date(x.updatedAt).toLocaleString():'-'}</td><td><button class="btn-sm btn${scheduleEnabled?'':' danger'}" onclick="toggleAccountSchedule('${x.id}',${!scheduleEnabled})">${scheduleEnabled?'Enabled':'Disabled'}</button></td><td>${proxyLabel} <button class="btn-sm btn" style="margin-top:2px" onclick="bindAccountProxy('${x.id}','${esc(x.boundProxy||'')}')">Bind</button></td><td><button class="btn-sm btn danger" onclick="deleteAccount('${x.id}')">Delete</button></td></tr>`;
+  }).join(''):'<tr><td colspan="7" class="empty">No matching accounts</td></tr>';
+}
+async function loadAccounts(){
+  try{
+    const d=await api('/api/accounts');
+    _accountsCache=d.accounts||[];
+    renderAccounts();
+  }catch(e){$('accountRows').innerHTML=`<tr><td colspan="7" class="empty">${e.message}</td></tr>`;}
+}
+
+async function toggleAccountSchedule(id,enabled){
+  try{
+    await api('/api/accounts/schedule',{method:'POST',body:JSON.stringify({id,enabled})});
+    const account=_accountsCache.find(x=>x.id===id);
+    if(account)account.scheduleEnabled=enabled;
+    renderAccounts();
+  }catch(e){showNotice(e.message,'error');}
+}
+
+async function deleteAccount(id){
+  if(!confirm('确定删除此账号？'))return;
+  try{await api('/api/accounts/delete',{method:'POST',body:JSON.stringify({id})});showNotice('已删除','success');loadAccounts();showPage('dashboard');}
+  catch(e){showNotice(e.message,'error');}
+}
+
+function bindAccountProxy(id,current){
+  const url=prompt('Bind proxy for this account (socks5://, http://, https://). Leave empty to unbind:',current||'');
+  if(url===null)return;
+  api('/api/accounts/bind-proxy',{method:'POST',body:JSON.stringify({id,proxyUrl:url.trim()})}).then(()=>{showNotice(url.trim()?'Proxy bound':'Proxy unbound','success');loadAccounts();}).catch(e=>showNotice(e.message,'error'));
+}
+
+async function startPKCE(){
+  try{
+    const d=await api('/api/auth/start');
+    $('callbackInput').dataset.state=d.state;
+    const popup=window.open(d.url,'pkce','width=600,height=800');
+    if(!popup){$('authStatus').innerHTML='<div class="highlight-box warning"><div class="highlight-box-title"><i data-lucide="alert-circle" style="width:14px;height:14px"></i>弹出窗口被浏览器拦截</div><p>请允许此网站的弹出窗口，然后重新点击"开始授权"。</p></div>';lucide.createIcons();return;}
+    $('authStatus').innerHTML='<div class="highlight-box"><div class="highlight-box-title"><i data-lucide="info" style="width:14px;height:14px"></i>授权页面已在新窗口打开</div><p>请在弹出窗口中完成登录。登录后弹出页会显示空白或错误——这是正常的。复制弹出页地址栏的<b>完整网址</b>，粘贴到下方"回调地址"输入框。</p></div>';
+    $('callbackInput').focus();
+    $('callbackInput').placeholder='粘贴弹出页地址栏中的完整回调地址…';
+    if(pkceTimer)clearInterval(pkceTimer);
+    const start=Date.now();
+    pkceTimer=setInterval(async()=>{
+      if(Date.now()-start>600000){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>授权超时，请重新开始授权。</b></div>';return;}
+      if(popup&&popup.closed){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>授权窗口在完成前已关闭。</b></div>';return;}
+      try{const s=await api('/api/auth/status?state='+d.state);
+        if(s.status==='authenticated'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box success"><div class="highlight-box-title"><i data-lucide="check-circle" style="width:14px;height:14px"></i>授权成功</div><p>账号已加入账号池。</p></div>';showNotice('授权成功','success');loadAccounts();}
+        if(s.status==='error'||s.status==='expired'){clearInterval(pkceTimer);$('authStatus').innerHTML='<div class="highlight-box warning"><b>授权失败或已过期</b></div>';}
+      }catch(e){}
+    },2000);
+  }catch(e){showNotice(e.message,'error');}
+}
+
+async function submitCallback(){
+  const raw=$('callbackInput').value.trim();
+  if(!raw)return showNotice('请粘贴回调地址','error');
+  try{
+    let u='/api/auth/callback?';
+    if(raw.includes('://')){u+='url='+encodeURIComponent(raw);}
+    else{u+=raw.replace(/^\?/,'');if(!raw.includes('state='))$('callbackInput').dataset.state&&(u+='&state='+$('callbackInput').dataset.state);}
+    await api(u);showNotice('授权成功','success');$('callbackInput').value='';loadAccounts();showPage('dashboard');
+  }catch(e){showNotice(e.message,'error');}
+}
+
+async function loadKeys(){
+  try{
+    const d=await api('/api/admin/keys');
+    const k=d.keys||[];
+    $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${x.name}</b></td><td><code>${x.prefix}</code></td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
+      <button class="btn-sm btn" onclick="openUseKey('${x.id}')">Use key</button>
+      <button class="btn-sm btn" onclick="editKey('${x.id}','${x.name.replace(/'/g,"\\'")}')">Edit</button>
+      <button class="btn-sm btn ${x.revoked?'success':'danger'}" onclick="toggleKey('${x.id}',${x.revoked})">${x.revoked?'Enable':'Disable'}</button>
+      <button class="btn-sm btn danger" onclick="revokeKey('${x.id}')">Delete</button>
+    </td></tr>`).join(''):'<tr><td colspan="6" class="empty">No API keys</td></tr>';
+  }catch(e){$('keyRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;}
+}
+
+let editKeyId=null;
+function editKey(id,name){editKeyId=id;$('editKeyName').value=name;$('editKeyModal').classList.add('open');setTimeout(()=>$('editKeyName').focus(),50);}
+function closeEditKeyModal(){$('editKeyModal').classList.remove('open');editKeyId=null;}
+async function saveEditKey(){
+  const name=$('editKeyName').value.trim();
+  if(!name)return showNotice('名称不能为空','error');
+  try{await api('/api/admin/keys',{method:'PUT',body:JSON.stringify({id:editKeyId,name})});closeEditKeyModal();showNotice('已更新','success');loadKeys();}
+  catch(e){showNotice(e.message,'error');}
+}
+async function toggleKey(id,revoked){
+  try{await api('/api/admin/keys',{method:'PUT',body:JSON.stringify({id,revoked:!revoked})});showNotice(revoked?'Enabled':'Disabled','success');loadKeys();}
+  catch(e){showNotice(e.message,'error');}
+}
+
+function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
+function closeKeyModal(){$('keyModal').classList.remove('open');}
+async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('已复制','success');}catch(e){}}
+async function createKey(e){
+  e.preventDefault();
+  try{
+    const d=await api('/api/admin/keys',{method:'POST',body:JSON.stringify({name:$('keyName').value||'default'})});
+    $('keyValue').value=d.key;$('keyResult').style.display='block';copyKey();loadKeys();
+  }catch(e){showNotice(e.message,'error');}
+}
+async function revokeKey(id){if(!confirm('确定删除此密钥？'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
+
+// ===== Usage page =====
+let usageDays=7, ugPageNo=0, ugTotal=0;
+const UG_PAGE=15;
+
+function fmtTok(n){
+  n=n||0;
+  if(n>=1e6)return (n/1e6).toFixed(2)+'M';
+  if(n>=1e3)return (n/1e3).toFixed(1)+'K';
+  return String(n);
+}
+function fmtNum(n){
+  n=n||0;
+  if(n>=1e6)return (n/1e6).toFixed(2)+'M';
+  if(n>=1e3)return (n/1e3).toFixed(1)+'K';
+  return String(n);
+}
+function fmtMetric(n,fallback='-'){
+  if(n===null||n===undefined||n==='')return fallback;
+  const value=Number(n);
+  return Number.isFinite(value)?Math.round(value).toLocaleString():fallback;
+}
+function fmtDuration(n){const value=fmtMetric(n);return value==='-'?value:value+' ms';}
+function usageStatusInfo(x){
+  const rawStatus=x.status_code??x.http_status??x.status;
+  const statusValue=String(rawStatus??'').trim();
+  const statusLower=statusValue.toLowerCase();
+  const errorValue=typeof x.error==='string'?x.error.trim():'';
+  const explicitError=x.error===true||x.error===1||x.error==='1'||(errorValue&&errorValue.toLowerCase()!=='false');
+  const numericStatus=statusValue===''?NaN:Number(rawStatus);
+  const partial=Boolean(x.partial);
+  const recovered=Boolean(x.stream_recovered);
+  const failed=Boolean(explicitError||x.error_type||x.error_message||['error','failed','failure'].includes(statusLower)||(Number.isFinite(numericStatus)&&numericStatus>=400));
+  const succeeded=!failed&&(['success','ok','completed'].includes(statusLower)||(Number.isFinite(numericStatus)&&numericStatus>=200&&numericStatus<400));
+  return {
+    state:partial?'partial':failed?'error':recovered?'recovered':succeeded?'success':'unknown',
+    label:partial?'Partial':failed?'Error':recovered?'Recovered':succeeded?'Success':'Unknown',
+    cssClass:partial?'partial':failed?'err':recovered?'recovered':succeeded?'':'unknown',
+    statusValue,
+    errorValue,
+  };
+}
+
+function setUsageRange(days){
+  usageDays=days;
+  document.querySelectorAll('#usageRange button').forEach(b=>b.classList.toggle('active',+b.dataset.days===days));
+  ugPageNo=0;
+  loadUsage();
+}
+
+async function loadUsage(){
+  try{
+    const d=await api('/api/usage?days='+usageDays);
+    const s=(d.stats||{}).summary||{};
+    $('ug-req').textContent=fmtNum(s.requests);
+    $('ug-req-sub').textContent='Today +'+(s.today_requests||0);
+    $('ug-tok').textContent=fmtTok(s.tokens);
+    $('ug-tok-sub').textContent='in '+(s.input||0)+' · tools '+(s.tools||0)+' · history '+(s.history||0)+' (excluded) · out '+(s.output||0)+' · cache '+(s.cache||0);
+    const successRate=Number(s.success_rate);
+    const successRequests=s.success_requests??s.successes??0;
+    const errorRequests=s.error_requests??s.errors??0;
+    $('ug-success').textContent=(Number.isFinite(successRate)?successRate:0).toFixed(1)+'%';
+    $('ug-success-sub').innerHTML='<span>Success</span> '+fmtNum(successRequests)+' · <span>Error</span> '+fmtNum(errorRequests);
+    $('ug-ttft').textContent=fmtMetric(s.ttft_avg_ms);
+    $('ug-ttft-sub').textContent='P50 '+fmtDuration(s.ttft_p50_ms)+' · P95 '+fmtDuration(s.ttft_p95_ms);
+    $('ug-p95').textContent=fmtMetric(s.p95_ms);
+    $('ug-p95-sub').textContent='P50 '+fmtDuration(s.p50_ms)+' · P99 '+fmtDuration(s.p99_ms);
+    $('ug-ms').textContent=fmtMetric(s.avg_ms,'0');
+    renderTrend((d.stats||{}).trend||[]);
+    renderBars('ugModels',(d.stats||{}).models||[],m=>m.name,'tokens');
+    renderBars('ugEndpoints',(d.stats||{}).endpoints||[],m=>m.endpoint,'tokens');
+    renderBars('ugKeys',(d.stats||{}).keys||[],m=>m.api_key_prefix,'requests');
+    loadUsageLogs();
+  }catch(e){
+    $('ugLogRows').innerHTML=`<tr><td colspan="9" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderTrend(trend){
+  const wrap=$('ugTrendWrap');
+  if(!trend||!trend.length){if(wrap)wrap.innerHTML='<div class="chart-empty"><i data-lucide="line-chart"></i>No trend data yet; it will appear after requests are made.</div>';try{lucide.createIcons();}catch(e){}return;}
+  const W=560,H=160,P=8;
+  const max=Math.max(...trend.map(t=>t.tokens),1);
+  let path='',area='';
+  // For a single data point, use the center coordinate and keep the chart style consistent.
+  if(trend.length===1){
+    const t=trend[0];
+    const cx=W/2;
+    const cy=H-P-(t.tokens/max)*(H-2*P);
+    wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px">
+      <circle cx="${cx}" cy="${cy}" r="4" fill="var(--accent)"><title>${t.date} · ${t.tokens.toLocaleString()} tokens</title></circle>
+      <text x="${cx}" y="${H-2}" text-anchor="middle" font-size="9" fill="var(--muted)">${t.date}</text></svg>`;
+    try{lucide.createIcons();}catch(e){}return;
+  }
+  const step=(W-2*P)/(trend.length-1);
+  trend.forEach((t,i)=>{
+    const x=P+i*step;
+    const y=H-P-(t.tokens/max)*(H-2*P);
+    path+=(i?'L':'M')+x.toFixed(1)+' '+y.toFixed(1)+' ';
+    area+=(i?'L':'M')+x.toFixed(1)+' '+(i?y.toFixed(1):(H-P))+' ';
+  });
+  if(trend.length===2)path='M'+P+' '+(H-P-(trend[0].tokens/max)*(H-2*P))+' L'+(W-P)+' '+(H-P-(trend[1].tokens/max)*(H-2*P));
+  area+='L'+(W-P)+' '+(H-P)+' L'+P+' '+(H-P)+' Z';
+  const gid='ugGrad';
+  wrap.innerHTML=`<svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/><stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02"/></linearGradient></defs>
+    <path d="${area}" fill="url(#${gid})"/>
+    <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    ${trend.map((t,i)=>{
+      const x=P+i*step;
+      const y=H-P-(t.tokens/max)*(H-2*P);
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.6" fill="var(--accent)"><title>${t.date} · ${t.tokens.toLocaleString()} tokens</title></circle>`;
+    }).join('')}
+    ${trend.map((t,i)=>{
+      const x=P+i*step;
+      if(i===0||i===trend.length-1||t.tokens===max)return `<text x="${x.toFixed(1)}" y="${H-2}" text-anchor="middle" font-size="9" fill="var(--muted)">${t.date}</text>`;
+      return '';
+    }).join('')}</svg>`;
+  try{lucide.createIcons();}catch(e){}
+}
+
+function renderBars(id,items,labelFn,valKey){
+  const el=$(id);
+  if(!items.length){el.innerHTML='<div class="chart-empty"><i data-lucide="chart-bar"></i>No data</div>';try{lucide.createIcons();}catch(e){}return;}
+  const palettes=['','green','orange','purple','teal','red','pink'];
+  const max=Math.max(...items.map(i=>i[valKey]),1);
+  const top=items.slice(0,8);
+  el.innerHTML=top.map((i,idx)=>{
+    const v=i[valKey]||0;
+    const lab=valKey==='requests'?(v+' req'):fmtTok(v);
+    const cls=palettes[idx%palettes.length];
+    return `<div class="bar-row"><span class="bar-name">${esc(labelFn(i))}</span><div class="bar-track"><div class="bar-fill ${cls}" style="width:${(v/max*100).toFixed(1)}%"></div></div><span class="bar-val">${esc(lab)}</span></div>`;
+  }).join('');
+}
+
+async function loadUsageLogs(){
+  try{
+    const d=await api('/api/usage/logs?limit='+UG_PAGE+'&offset='+ugPageNo*UG_PAGE);
+    ugTotal=d.total||0;
+    const labels={time:'Time',ip:'IP',request:'Request ID',route:'Model / Endpoint',status:'Status',latency:'TTFT / Total',tokens:'Tokens (est.)',activity:'Retries / Tools',error:'Error'};
+    Object.keys(labels).forEach(key=>labels[key]=esc(translateText(labels[key]).trim()));
+    const rows=(d.logs||[]).map(x=>{
+      const status=usageStatusInfo(x);
+      const errorType=String(x.error_type||(status.state==='error'?'Error':''));
+      const errorMessage=String(x.error_message||status.errorValue||'');
+      const parsedTime=new Date(x.time);
+      const timeText=Number.isNaN(parsedTime.getTime())?String(x.time||'-'):parsedTime.toLocaleString();
+      const ipMeta=[x.client_country,x.proxy].filter(Boolean).map(v=>esc(v)).join(' · ');
+      const requestMeta=[x.upstream_request_id?'Upstream '+esc(x.upstream_request_id):'',x.interrupted_request_id&&x.interrupted_request_id!==x.upstream_request_id?'Interrupted '+esc(x.interrupted_request_id):'',x.cf_ray?'CF '+esc(x.cf_ray):''].filter(Boolean).join(' · ');
+      const endpoint=String(x.endpoint||'-').replace(/^\/v1\//,'');
+      const routeMeta=[endpoint,x.api_key_prefix].filter(Boolean).map(v=>esc(v)).join(' · ');
+      const phaseMeta=[x.queue_ms==null?'':'Q '+fmtDuration(x.queue_ms),x.connect_ms==null?'':'C '+fmtDuration(x.connect_ms),x.last_delta_ms==null?'':'Last '+fmtDuration(x.last_delta_ms),x.tool_planning_ms==null?'':'Plan '+fmtDuration(x.tool_planning_ms)].filter(Boolean).join(' · ');
+      const inputTokens=Number(x.input_tokens)||0,toolTokens=Number(x.tool_tokens)||0,historyTokens=Number(x.history_tokens)||0,outputTokens=Number(x.output_tokens)||0,cacheTokens=Number(x.cache_tokens)||0;
+      const tokenTotal=inputTokens+toolTokens+outputTokens+cacheTokens;
+      const tokenMeta='in '+inputTokens+' · tools '+toolTokens+' · history '+historyTokens+' (excluded) · out '+outputTokens+' · cache '+cacheTokens+' · '+(x.conversation_reused?'reused':'fresh')+(x.usage_source?' · '+esc(x.usage_source):'');
+      const retryCount=Number(x.retry_count)||0,toolCount=Number(x.tool_call_count)||0;
+      const statusMeta=status.statusValue&&!['success','error','failed','failure','ok','completed'].includes(status.statusValue.toLowerCase())?esc(status.statusValue):'';
+      const failureMeta=[x.failure_stage,x.upstream_close_code?'close '+x.upstream_close_code:''].filter(Boolean).map(v=>esc(v)).join(' · ');
+      const errorHtml=(status.state==='error'||status.state==='partial'||status.state==='recovered')
+        ?`<span class="usage-cell-primary usage-error-type">${esc(status.state==='recovered'?'Recovered':errorType||status.label)}</span>${errorMessage?`<span class="usage-cell-secondary usage-error-message" title="${esc(errorMessage)}">${esc(errorMessage)}</span>`:''}${failureMeta?`<span class="usage-cell-secondary">${failureMeta}</span>`:''}`
+        :'<span class="usage-cell-secondary">-</span>';
+      return `<tr>
+        <td data-label="${labels.time}"><span class="usage-cell-primary">${esc(timeText)}</span></td>
+        <td data-label="${labels.ip}"><span class="usage-cell-primary">${esc(x.client_ip||'-')}</span>${ipMeta?`<span class="usage-cell-secondary">${ipMeta}</span>`:''}</td>
+        <td data-label="${labels.request}"><code class="usage-id" title="${esc(x.request_id||'-')}">${esc(x.request_id||'-')}</code>${requestMeta?`<span class="usage-cell-secondary">${requestMeta}</span>`:''}</td>
+        <td data-label="${labels.route}"><span class="usage-cell-primary">${esc(x.model||'-')}</span><span class="usage-cell-secondary">${routeMeta}</span></td>
+        <td data-label="${labels.status}"><span class="usage-status ${status.cssClass}">${esc(status.label)}</span>${statusMeta?`<span class="usage-cell-secondary">${statusMeta}</span>`:''}</td>
+        <td data-label="${labels.latency}"><span class="usage-cell-primary">${fmtDuration(x.ttft_ms)} / ${fmtDuration(x.duration_ms)}</span>${phaseMeta?`<span class="usage-cell-secondary">${phaseMeta}</span>`:''}</td>
+        <td data-label="${labels.tokens}"><span class="token-stack"><b>${tokenTotal}</b></span><span class="usage-cell-secondary">${tokenMeta}</span></td>
+        <td data-label="${labels.activity}"><span class="usage-cell-primary">${retryCount} / ${toolCount}</span></td>
+        <td data-label="${labels.error}" data-wide="true" class="usage-error-cell">${errorHtml}</td>
+      </tr>`;
+    }).join('');
+    $('ugLogRows').innerHTML=rows||'<tr><td colspan="9" class="empty">No requests yet</td></tr>';
+    const totalPages=Math.max(1,Math.ceil(ugTotal/UG_PAGE));
+    $('ugPageInfo').textContent=`Page ${ugPageNo+1} / ${totalPages} · ${ugTotal} total`;
+    $('ugPrev').disabled=ugPageNo<=0;
+    $('ugNext').disabled=ugPageNo>=totalPages-1;
+  }catch(e){
+    $('ugLogRows').innerHTML=`<tr><td colspan="9" class="empty">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function ugPage(delta){
+  ugPageNo=Math.max(0,ugPageNo+delta);
+  loadUsageLogs();
+}
+
+// ===== Use API modal =====
+let useKeyId='',useKeyPrefix='',modelTestKey='';const ukeClients=[
+  {id:'curl',label:'curl'},
+  {id:'codex',label:'Codex CLI'},
+  {id:'claude',label:'Claude Code'},
+  {id:'opencode',label:'OpenCode'},
+];
+const ukeOs=[{id:'unix',label:'macOS / Linux'},{id:'win',label:'Windows'}];
+let ukeClient='codex',ukeOsSel='unix';
+
+async function openUseKey(id){
+  useKeyId=id;
+  const d=await api('/api/admin/keys');
+  const rec=(d.keys||[]).find(x=>x.id===id);
+  if(!rec){showNotice('找不到密钥','error');return;}
+  $('useKeyName').textContent='当前密钥：'+rec.name+' ('+rec.prefix+')';
+  $('useKeyVal').value=rec.raw||'';
+  $('useKeyModal').classList.add('open');
+  renderUkeTabs();
+  renderUkeFiles();
+}
+function closeUseKey(){$('useKeyModal').classList.remove('open');}
+function renderUkeTabs(){
+  $('useKeyClients').innerHTML=ukeClients.map(c=>`<button class="uke-tab ${c.id===ukeClient?'active':''}" onclick="ukeClient='${c.id}';renderUkeTabs();renderUkeFiles()"><i data-lucide="${c.id==='codex'?'terminal':c.id==='curl'?'square-terminal':c.id==='claude'?'sparkles':'braces'}"></i>${c.label}</button>`).join('');
+  $('useKeyOs').innerHTML=ukeOs.map(o=>`<button class="uke-tab ${o.id===ukeOsSel?'active':''}" onclick="ukeOsSel='${o.id}';renderUkeFiles()">${o.label}</button>`).join('');
+  try{lucide.createIcons();}catch(e){}
+}
+function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+function ukeFile(path,content){
+  return `<div class="uke-file">
+    <div class="uke-file-head"><code>${esc(path)}</code><button class="btn btn-sm" onclick="navigator.clipboard.writeText(this.closest('.uke-file').querySelector('pre').textContent.trim());showNotice('已复制','success')">Copy</button></div>
+    <pre>${esc(content)}</pre>
+  </div>`;
+}
+function renderUkeFiles(){
+  const base=location.origin;
+  const key=$('useKeyVal').value||useKeyPrefix;
+  let html='';
+  if(ukeClient==='curl'){
+    html=ukeFile('Terminal',`curl ${base}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${key} \\
+  -d '{"model":"auto","messages":[{"role":"user","content":"Say hello in one sentence."}]}'`);
+  }else if(ukeClient==='codex'){
+    const cfg=`model_provider = "OpenAI"
+model = "auto"
+review_model = "auto"
+
+[model_providers.OpenAI]
+name = "M365 Gateway"
+base_url = "${base}/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[features]
+goals = true`;
+    html=ukeFile(ukeOsSel==='unix'?'~/.codex/config.toml':'%USERPROFILE%\\.codex\\config.toml',cfg);
+    html+=ukeFile('~/.codex/auth.json',`{
+  "OPENAI_API_KEY": "${key}"
+}`);
+    if(ukeOsSel==='win'){
+      html+=ukeFile('PowerShell',`$env:OPENAI_API_KEY = "${key}"`);
+    }else{
+      html+=ukeFile('Terminal',`export OPENAI_API_KEY="${key}"`);
+    }
+  }else if(ukeClient==='claude'){
+    const cfg=`{
+  "env": {
+    "ANTHROPIC_BASE_URL": "${base}",
+    "ANTHROPIC_AUTH_TOKEN": "${key}",
+    "ANTHROPIC_MODEL": "claude-sonnet"
+  }
+}`;
+    html=ukeFile(ukeOsSel==='unix'?'~/.claude/settings.json':'%USERPROFILE%\\.claude\\settings.json',cfg);
+    html+=ukeFile(ukeOsSel==='unix'?'Terminal':'PowerShell',(ukeOsSel==='win'?'$env:ANTHROPIC_AUTH_TOKEN="'+key+'"':'export ANTHROPIC_AUTH_TOKEN="'+key+'"'));
+  }else if(ukeClient==='opencode'){
+    const cfg=`{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "m365": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "M365 Gateway",
+      "options": {
+        "baseURL": "${base}/v1",
+        "apiKey": "${key}"
+      },
+      "models": {
+        "auto": {
+          "name": "M365 auto"
+        }
+      }
+    }
+  }
+}`;
+    html=ukeFile('opencode.json',cfg);
+  }
+  $('useKeyFiles').innerHTML=html;
+}
+async function copyUseKey(){
+  const v=$('useKeyVal').value;
+  if(!v){showNotice('完整密钥不可用','error');return;}
+  try{await navigator.clipboard.writeText(v);showNotice('已复制','success');}catch(e){}
+}
+
+async function loadConversations(){
+  try{
+    const d=await api('/api/m365/conversations');
+    const c=d.data||[];
+    $('convRows').innerHTML=c.length?c.map(x=>{
+      const id=String(x.conversationId||'');
+      const updated=x.updateTimeUtc||x.createTimeUtc;
+      return `<tr class="conv-row" data-conversation-id="${esc(id)}">
+        <td><button class="conv-link" type="button">${esc(x.chatName||'未命名对话')}</button><div class="conv-meta"><code>${esc(id)}</code></div></td>
+        <td>${Number(x.messageCount||0)}</td>
+        <td>${esc(x.accountEmail||x.accountId||'-')}</td>
+        <td style="font-size:12px;color:var(--muted)">${updated?new Date(updated).toLocaleString():'-'}</td>
+        <td><div style="display:flex;gap:6px"><button class="btn-sm btn" data-conv-action="view">View</button><button class="btn-sm btn danger" data-conv-action="delete">Delete</button></div></td>
+      </tr>`;
+    }).join(''):'<tr><td colspan="5" class="empty">No conversations</td></tr>';
+    $('convRows').querySelectorAll('.conv-row').forEach(row=>{
+      row.addEventListener('click',event=>{
+        const action=event.target.closest('[data-conv-action]')?.dataset.convAction;
+        if(action==='delete'){event.stopPropagation();deleteConv(row.dataset.conversationId);return;}
+        openConversation(row.dataset.conversationId);
+      });
+    });
+    applyLocale(currentLocale);
+  }catch(e){$('convRows').innerHTML=`<tr><td colspan="5" class="empty">${esc(e.message)}</td></tr>`;}
+}
+
+function openConversation(id){window.open('/conversation?id='+encodeURIComponent(id),'_blank','noopener');}
+
+function termOpen(title){$('termTitle').textContent=title;$('termBody').innerHTML='';$('termBox').style.display='block';}
+function termLine(msg,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent='> '+msg;$('termBody').appendChild(d);$('termBody').scrollTop=$('termBody').scrollHeight;}
+function termClear(){$('termBody').innerHTML='';}
+
+async function deleteConv(id){if(!confirm('确定删除此对话？'))return;try{await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:id})});showNotice('已删除','success');loadConversations();}catch(e){showNotice(e.message,'error');}}
+async function cleanupAll(){
+  const total=confirm('确定清理所有对话？\n每条对话将逐一删除并在终端记录日志。');
+  if(!total)return;
+  termOpen('cleanup — m365-copilot2api');
+  termLine('开始清理所有对话…');
+  let ok=0,fail=0,round=0;
+  for(round=1;round<=100;round++){
+    let d;
+    try{d=await api('/api/m365/conversations');}catch(e){termLine('获取对话列表失败：'+e.message,'err');break;}
+    const c=d.data||[];
+    if(!c.length){
+      termLine('Round '+round+': list is empty.','dim');
+      break;
+    }
+    termLine('Round '+round+': found '+c.length+' conversations (paged loading; fetch the next batch after deletion)','dim');
+    for(let i=0;i<c.length;i++){
+      const x=c[i];
+      const name=x.chatName||'未命名';
+      termLine('['+(i+1)+'/'+c.length+'] Deleting "'+name+'" '+String(x.conversationId||'').slice(0,8)+'…');
+      try{
+        await api('/api/m365/conversations/delete',{method:'POST',body:JSON.stringify({conversation_id:x.conversationId})});
+        termLine('✓ Deleted "'+name+'"','ok');ok++;
+      }catch(e){termLine('✗ Delete failed: '+e.message,'err');fail++;}
+      if(i< c.length-1)await new Promise(r=>setTimeout(r,150));
+    }
+    await new Promise(r=>setTimeout(r,500));
+  }
+  termLine('Finished: '+ok+' succeeded, '+fail+' failed, '+round+' rounds total.',fail?'warn':'ok');
+  showNotice('清理完成','success');loadConversations();
+}
+
+function proxyRow(x){
+  const inCooldown=x.cooldownUntil&&new Date(x.cooldownUntil)>new Date();
+  const badge=x.health==='reachable'?'<span class="status online"><i></i>Healthy</span>':x.health==='unreachable'?'<span class="status offline"><i></i>Unreachable</span>':x.health==='upstream_error'?'<span class="status warn"><i></i>Upstream error</span>':'<span class="status">Not checked</span>';
+  return `<tr>
+    <td><code style="font-size:12px">${esc(x.url)}</code>${inCooldown?'<div style="font-size:11px;color:var(--muted)">Cooling down</div>':''}</td>
+    <td>${badge}</td>
+    <td style="font-size:12px;color:var(--muted)">${x.latencyMs>0?x.latencyMs+' ms':'-'}</td>
+    <td style="font-size:12px;color:var(--muted)">${x.failures||0}</td>
+    <td style="font-size:12px;color:var(--muted)">${x.cooldownUntil?new Date(x.cooldownUntil).toLocaleString():'-'}</td>
+    <td style="text-align:right;white-space:nowrap">
+      <button class="btn-sm btn" onclick="proxyCheckOne('${esc(x.url)}')">检测</button>
+      <button class="btn-sm btn danger" onclick="proxyRemove('${esc(x.url)}')">Delete</button>
+    </td>
+  </tr>`;
+}
+async function loadProxies(){
+  try{
+    const d=await api('/api/admin/proxy-pool');
+    const p=d.proxies||[];
+    $('proxyRows').innerHTML=p.length?p.map(proxyRow).join(''):'<tr><td colspan="6" class="empty">No proxies; requests will connect directly</td></tr>';
+  }catch(e){$('proxyRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;}
+}
+async function proxyAdd(){
+  const raw=$('proxyInput').value.trim();
+  if(!raw)return showNotice('请输入代理地址','error');
+  try{
+    const d=await api('/api/admin/proxy-pool',{method:'POST',body:JSON.stringify({urls:[raw]})});
+    showNotice('Added '+d.added+' proxies','success');$('proxyInput').value='';loadProxies();
+  }catch(e){showNotice(e.message,'error');}
+}
+async function proxyRemove(url){
+  if(!confirm('确定删除代理 '+url+'？'))return;
+  try{await api('/api/admin/proxy-pool?url='+encodeURIComponent(url),{method:'DELETE'});showNotice('已删除','success');loadProxies();}
+  catch(e){showNotice(e.message,'error');}
+}
+async function proxyCheckOne(url){
+  try{
+    const d=await api('/api/admin/proxy-pool?action=check',{method:'PUT',body:JSON.stringify({url})});
+    const rec=(d.proxies||[]).find(x=>x.url===url);
+    if(rec&&rec.health==='reachable')showNotice('Connection healthy: '+rec.latencyMs+' ms','success');
+    else showNotice(rec&&rec.lastError?rec.lastError:'连接失败','error');
+    loadProxies();
+  }catch(e){showNotice(e.message,'error');}
+}
+async function proxyCheckAll(){
+  termOpen('proxy check — m365-copilot2api');
+  termLine('正在检测所有代理…');
+  try{
+    const d=await api('/api/admin/proxy-pool?action=check',{method:'PUT'});
+    const p=d.proxies||[];
+    let ok=0;
+    for(const x of p){
+      if(x.health==='reachable'){termLine('✓ '+x.url+' — '+x.latencyMs+' ms','ok');ok++;}
+      else termLine('✗ '+x.url+(x.lastError?' — '+x.lastError:''),'err');
+    }
+    termLine('Finished: '+ok+'/'+p.length+' proxies available.',ok===p.length&&p.length?'ok':'warn');
+    showNotice('健康检查完成','success');loadProxies();
+  }catch(e){termLine('Check failed: '+e.message,'err');}
+}
+async function proxyTest(){
+  await proxyCheckAll();
+}
+
+async function loadModelTest(){
+  $('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">Loading...</td></tr>';
+  try{
+    const d=await api('/api/admin/models');
+    const models=d.data||[];
+    if(!models.length){$('modelTestRows').innerHTML='<tr><td colspan="4" class="empty">No models available</td></tr>';return;}
+    $('modelTestRows').innerHTML=models.map(m=>`<tr data-model="${esc(m.id)}"><td><b>${esc(m.id)}</b></td><td><span class="status"><i></i>Not tested</span></td><td style="font-size:12px;color:var(--muted)">-</td><td style="font-size:12px;color:var(--muted)">点击"测试全部"</td></tr>`).join('');
+  }catch(e){$('modelTestRows').innerHTML=`<tr><td colspan="4" class="empty">${e.message}</td></tr>`;}
+}
+async function modelTestOne(id,row){
+  const badge=row.querySelector('td:nth-child(2)');
+  const lat=row.querySelector('td:nth-child(3)');
+  const reply=row.querySelector('td:nth-child(4)');
+  badge.innerHTML='<span class="status"><i></i>Testing…</span>';
+  lat.textContent='-';reply.textContent='';
+  const start=performance.now();
+  try{
+    const d=await api('/api/admin/models/test',{method:'POST',body:JSON.stringify({model:id})});
+    const ms=Math.round(performance.now()-start);
+    const content=d.reply||'（空回复）';
+    badge.innerHTML='<span class="status online"><i></i>Healthy</span>';
+    lat.textContent=ms+' ms';
+    reply.textContent=String(content).slice(0,80);
+  }catch(e){
+    badge.innerHTML='<span class="status offline"><i></i>Failed</span>';
+    lat.textContent=Math.round(performance.now()-start)+' ms';
+    reply.textContent=e.message;
+  }
+}
+async function modelTestAll(){
+  const rows=[...document.querySelectorAll('#modelTestRows tr[data-model]')];
+  if(!rows.length){showNotice('请先加载模型列表','error');return;}
+  for(let i=0;i<rows.length;i++){
+    modelTestOne(rows[i].dataset.model,rows[i]);
+    await new Promise(r=>setTimeout(r,250));
+  }
+  showNotice('模型测试完成','success');
+}
+
+async function loadSettings(){
+  try{
+    const d=await api('/api/admin/settings');
+    const v=d.settings||{};
+    $('setListen').value=v.listenAddress||'';
+    $('setTimeout').value=v.chatTimeoutSeconds||300;
+    $('setResumeAttempts').value=v.streamResumeAttempts??1;
+  }catch(e){showNotice(e.message,'error');}
+}
+async function saveSettings(){
+  try{
+    const listen=$('setListen').value.trim();
+    const timeout=$('setTimeout').value.trim();
+    const resumeAttempts=$('setResumeAttempts').value.trim();
+    const body={};
+    if(listen)body.listenAddress=listen;
+    if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
+    if(resumeAttempts!=='')body.streamResumeAttempts=parseInt(resumeAttempts);
+    await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
+    showNotice('设置已保存','success');
+  }catch(e){showNotice(e.message,'error');}
+}
+
+setInterval(()=>{if($('page-accounts').style.display!=='none')loadAccounts();},15000);
+
+// Init
+try{lucide.createIcons();}catch(e){}
+fetch('/api/admin/session').then(r=>r.json()).then(d=>{
+  if(d.authenticated&&d.must_change_password){location.replace('/login');}
+  else if(d.authenticated){$('login').style.display='none';$('app').style.display='flex';showPage('dashboard');loadStats();loadOnboarding();}
+  else{$('login').style.display='grid';}
+}).catch(()=>{$('login').style.display='grid';});
+</script>
+</body>
+</html>
