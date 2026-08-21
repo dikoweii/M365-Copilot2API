@@ -25,6 +25,7 @@ type reasoningConfig struct {
 type modelSpec struct {
 	ID, Owner, DisplayName, DefaultReasoningLevel string
 	Tools                                         bool
+	ImageGeneration                               bool
 }
 
 type reasoningEffortPreset struct {
@@ -68,9 +69,10 @@ var gatewayModels = []modelSpec{
 	{ID: "gpt-5.5", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.5-reasoning", Owner: "microsoft-365", Tools: true},
 	{ID: "gpt-5.6-reasoning", Owner: "microsoft-365", Tools: true},
-	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2"},
+	{ID: "gpt-image-2", Owner: "microsoft-365", DisplayName: "GPT Image 2", ImageGeneration: true},
 	{ID: "claude-sonnet", Owner: "anthropic-via-microsoft-365", Tools: true},
 	{ID: "claude-sonnet-reasoning", Owner: "anthropic-via-microsoft-365", Tools: true},
+	{ID: "auto", Owner: "microsoft-365", DisplayName: "M365 Auto", Tools: true, ImageGeneration: true},
 }
 
 func validUpstreamTone(tone string) bool {
@@ -252,7 +254,7 @@ func reasoningTone(model, effort string) (string, error) {
 	case "gpt-5.5":
 		return "Gpt_5_5_Reasoning", nil
 	case "gpt-5.6":
-		return "Gpt_5_5_Reasoning", nil
+		return "Gpt_5_6_Reasoning", nil
 	default:
 		return "Gpt_5_5_Reasoning", nil
 	}
@@ -266,6 +268,15 @@ func modelCatalog() []map[string]any {
 		// different OpenAI-compatible clients inspect different locations.
 		features := []string{"tools", "function_calling", "streaming", "reasoning", "vision"}
 		modalities := []string{"text", "image"}
+		outputModalities := []string{"text"}
+		if m.ImageGeneration {
+			features = append(features, "image_generation")
+			if m.ID == "gpt-image-2" {
+				outputModalities = []string{"image"}
+			} else {
+				outputModalities = []string{"text", "image"}
+			}
+		}
 		caps := map[string]any{
 			"chat_completions": true, "responses": true, "streaming": true,
 			"tools": true, "reasoning": true,
@@ -273,7 +284,8 @@ func modelCatalog() []map[string]any {
 			"reasoning_mode": "gateway_tone_routing", "supports_tools": true, "tool_calls": true,
 			"function_calling": true, "supports_function_calling": true, "supports_vision": true,
 			"vision": true, "modalities": modalities, "input_modalities": modalities,
-			"output_modalities": []string{"text"}, "supported_features": features,
+			"output_modalities": outputModalities, "supported_features": features,
+			"image_generation": m.ImageGeneration, "supports_image_generation": m.ImageGeneration,
 		}
 		displayName := m.DisplayName
 		if displayName == "" {
@@ -302,7 +314,8 @@ func modelCatalog() []map[string]any {
 			"supported_reasoning_levels": advertisedReasoningEfforts,
 			"function_calling":           true, "supports_function_calling": true, "supports_vision": true,
 			"vision": true, "modalities": modalities, "input_modalities": modalities,
-			"output_modalities": []string{"text"}, "supported_features": features,
+			"output_modalities": outputModalities, "supported_features": features,
+			"image_generation": m.ImageGeneration, "supports_image_generation": m.ImageGeneration,
 		})
 	}
 	return out

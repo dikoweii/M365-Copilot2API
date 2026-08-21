@@ -42,26 +42,27 @@ var configurableCodexModels = []string{
 }
 
 type runtimeSettings struct {
-	MaxToolCallsPerTurn int            `json:"maxToolCallsPerTurn"`
-	MaxToolRounds       int            `json:"maxToolRounds"`
-	ContextWindow       int            `json:"contextWindow"`
-	MaxOutputTokens     int            `json:"maxOutputTokens"`
-	ChatTimeoutSeconds  int            `json:"chatTimeoutSeconds"`
-	ImageTimeoutSeconds int            `json:"imageTimeoutSeconds"`
-	LogLevel            string         `json:"logLevel"`
-	DebugLogPath        string         `json:"debugLogPath"`
-	ListenAddress       string         `json:"listenAddress"`
-	ConfigPath          string         `json:"configPath"`
-	TokenCachePath      string         `json:"tokenCachePath"`
-	SessionCachePath    string         `json:"sessionCachePath"`
-	OutboundProxy       string         `json:"outboundProxy"`
-	ProxyPool           []string       `json:"proxyPool,omitempty"`
-	ClientID            string         `json:"clientId"`
-	Authority           string         `json:"authority"`
-	RedirectURI         string         `json:"redirectUri"`
-	Scope               string         `json:"scope"`
-	ModelMappings       []modelMapping `json:"modelMappings"`
-	ToolPlanningMode    string         `json:"toolPlanningMode"`
+	MaxToolCallsPerTurn  int            `json:"maxToolCallsPerTurn"`
+	MaxToolRounds        int            `json:"maxToolRounds"`
+	ContextWindow        int            `json:"contextWindow"`
+	MaxOutputTokens      int            `json:"maxOutputTokens"`
+	ChatTimeoutSeconds   int            `json:"chatTimeoutSeconds"`
+	StreamResumeAttempts int            `json:"streamResumeAttempts"`
+	ImageTimeoutSeconds  int            `json:"imageTimeoutSeconds"`
+	LogLevel             string         `json:"logLevel"`
+	DebugLogPath         string         `json:"debugLogPath"`
+	ListenAddress        string         `json:"listenAddress"`
+	ConfigPath           string         `json:"configPath"`
+	TokenCachePath       string         `json:"tokenCachePath"`
+	SessionCachePath     string         `json:"sessionCachePath"`
+	OutboundProxy        string         `json:"outboundProxy"`
+	ProxyPool            []string       `json:"proxyPool,omitempty"`
+	ClientID             string         `json:"clientId"`
+	Authority            string         `json:"authority"`
+	RedirectURI          string         `json:"redirectUri"`
+	Scope                string         `json:"scope"`
+	ModelMappings        []modelMapping `json:"modelMappings"`
+	ToolPlanningMode     string         `json:"toolPlanningMode"`
 }
 
 type settingsStore struct {
@@ -77,11 +78,23 @@ func envInt(name string, fallback int) int {
 	}
 	return fallback
 }
+
+func envIntAllowZero(name string, fallback int) int {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
+}
 func defaultRuntimeSettings() runtimeSettings {
 	return runtimeSettings{
 		MaxToolCallsPerTurn: envInt("M365_MAX_TOOL_CALLS_PER_TURN", 32), MaxToolRounds: envInt("M365_MAX_TOOL_ROUNDS", 512),
 		ContextWindow: envInt("M365_CONTEXT_WINDOW", 128000), MaxOutputTokens: envInt("M365_MAX_OUTPUT_TOKENS", 16384),
-		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 120), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
+		ChatTimeoutSeconds: envInt("M365_CHAT_TIMEOUT_SECONDS", 300), StreamResumeAttempts: envIntAllowZero("M365_STREAM_RESUME_ATTEMPTS", 1), ImageTimeoutSeconds: envInt("M365_IMAGE_TIMEOUT_SECONDS", 150), LogLevel: firstNonEmptySetting(os.Getenv("M365_LOG_LEVEL"), "info"),
 		DebugLogPath: os.Getenv("M365_DEBUG_LOG"), ListenAddress: os.Getenv("M365_LISTEN"), ConfigPath: os.Getenv("M365_CONFIG"),
 		TokenCachePath: os.Getenv("M365_TOKEN_CACHE"), SessionCachePath: os.Getenv("M365_SESSION_CACHE"), OutboundProxy: os.Getenv(outbound.EnvProxy), ClientID: os.Getenv("M365_CLIENT_ID"),
 		Authority: os.Getenv("M365_AUTHORITY"), RedirectURI: os.Getenv("M365_REDIRECT_URI"), Scope: os.Getenv("M365_SCOPE"),
@@ -135,6 +148,9 @@ func validateSettings(v runtimeSettings) error {
 	}
 	if v.ChatTimeoutSeconds < 5 || v.ChatTimeoutSeconds > 3600 {
 		return fmt.Errorf("聊天超时必须为 5-3600 秒")
+	}
+	if v.StreamResumeAttempts < 0 || v.StreamResumeAttempts > 2 {
+		return fmt.Errorf("流式续接次数必须为 0-2")
 	}
 	if v.ImageTimeoutSeconds < 5 || v.ImageTimeoutSeconds > 3600 {
 		return fmt.Errorf("图片超时必须为 5-3600 秒")

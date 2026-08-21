@@ -27,11 +27,16 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 	sanitizePublicAssistantMessage(msg, model)
 	blocks := []any{}
 	stop := "end_turn"
+	if finish == "length" {
+		stop = "max_tokens"
+	}
 	if reasoning, _ := msg["reasoning_content"].(string); reasoning != "" {
 		blocks = append(blocks, map[string]any{"type": "thinking", "thinking": reasoning, "signature": ""})
 	}
-	if calls, ok := msg["tool_calls"].([]any); ok {
-		stop = "tool_use"
+	if calls, ok := msg["tool_calls"].([]any); ok && len(calls) > 0 {
+		if stop != "max_tokens" {
+			stop = "tool_use"
+		}
 		for _, raw := range calls {
 			tc, _ := raw.(map[string]any)
 			fn, _ := tc["function"].(map[string]any)
@@ -77,7 +82,6 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 			blocks = append(blocks, map[string]any{"type": "text", "text": ""})
 		}
 	}
-	_ = finish
 	inputTokens := int64(0)
 	outputTokens := int64(0)
 	if u, ok := src["usage"].(map[string]any); ok {

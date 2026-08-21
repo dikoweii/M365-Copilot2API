@@ -258,8 +258,48 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
 .pagination{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 18px;border-top:1px solid var(--line);font-size:12px;color:var(--muted)}
 .usage-status{display:inline-flex;align-items:center;justify-content:center;min-width:52px;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;background:rgba(52,199,89,.12);color:var(--green)}
 .usage-status.err{background:rgba(255,59,48,.1);color:var(--red)}
+.usage-status.partial{background:rgba(255,149,0,.12);color:#d97706}
+.usage-status.recovered{background:rgba(0,122,255,.12);color:var(--accent)}
+.usage-status.unknown{background:var(--line);color:var(--muted)}
+.usage-status.unknown{background:var(--line);color:var(--muted)}
 .token-stack{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 .token-stack b{color:var(--text);font-weight:600}
+.usage-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+.usage-stat-sub{display:block;color:var(--muted)}
+.usage-estimate-note{display:flex;align-items:center;gap:6px;margin:0 0 14px;color:var(--muted);font-size:11px}
+.usage-estimate-note i,.usage-estimate-note svg{width:13px;height:13px;flex-shrink:0}
+.usage-table-wrap{overflow-x:auto}
+.usage-log-table{min-width:1120px}
+.usage-log-table th,.usage-log-table td{padding-left:12px;padding-right:12px;vertical-align:top}
+.usage-cell-primary{display:block;font-size:12px;color:var(--text);font-weight:600;font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere}
+.usage-cell-secondary{display:block;max-width:220px;margin-top:3px;color:var(--muted);font-size:10px;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
+.usage-id{display:block;max-width:175px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:var(--text)}
+.usage-error-cell{max-width:240px;white-space:normal!important}
+.usage-error-type{color:var(--red)}
+.usage-error-message{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+@media(max-width:900px){.usage-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){
+  .usage-table-wrap{overflow:visible}
+  .usage-log-table,.usage-log-table tbody{display:block;width:100%;min-width:0}
+  .usage-log-table thead{display:none}
+  .usage-log-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .usage-log-table tr:last-child{border-bottom:0}
+  .usage-log-table td{display:block;min-width:0;padding:0;border:0;white-space:normal}
+  .usage-log-table td::before{content:attr(data-label);display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+  .usage-log-table td[data-wide="true"]{grid-column:1/-1}
+  .usage-log-table td.empty{grid-column:1/-1;padding:28px 12px}
+  .usage-log-table td.empty::before{display:none}
+  .usage-log-table tr:hover td{background:transparent}
+  .usage-log-table .usage-id{max-width:none;white-space:normal;overflow-wrap:anywhere}
+  .usage-log-table .usage-cell-secondary{max-width:none}
+  .usage-log-table .usage-error-message{-webkit-line-clamp:3}
+}
+@media(max-width:640px){
+  .usage-stats{grid-template-columns:1fr}
+  .pagination{justify-content:flex-start;flex-wrap:wrap;padding:10px 12px}
+  .pagination>span{flex:1 0 100%;min-width:0;text-align:center;overflow-wrap:anywhere}
+  .pagination>.btn{flex:1 1 0;min-width:0}
+}
 
 /* Use Key modal tabs */
 .uke-tabs{display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
@@ -288,8 +328,8 @@ body{background:var(--bg);color:var(--text);font-family:"Inter","SF Pro Display"
     <form id="loginForm" style="background:var(--surface);-webkit-backdrop-filter:blur(40px) saturate(180%);backdrop-filter:blur(40px) saturate(180%);border:1px solid var(--surface-border);border-radius:var(--radius);padding:32px;box-shadow:var(--shadow-lg)">
       <div class="form-group">
         <label class="form-label">Password</label>
-        <input class="form-input" id="loginPassword" type="password" placeholder="请输入管理员密码（默认：admin123）" autofocus>
-        <div class="form-hint" style="margin-top:4px">默认密码为 <code>admin123</code>，首次登录后需修改密码。</div>
+        <input class="form-input" id="loginPassword" type="password" placeholder="请输入管理员密码" autofocus>
+        <div class="form-hint" style="margin-top:4px">管理员密码由部署者配置；未配置时管理端不可用。</div>
       </div>
       <button type="submit" class="btn primary" style="width:100%;margin-top:8px">Log in</button>
     </form>
@@ -390,22 +430,22 @@ if (response.output_text) {
         <div class="usage-overview">
           <div class="usage-overview-item">
             <div class="usage-overview-top"><i data-lucide="flame"></i> Last 24 hours</div>
-            <span class="usage-overview-value" id="ov24hTok">0<small>tokens</small></span>
+            <span class="usage-overview-value" id="ov24hTok">0<small>Tokens (est.)</small></span>
             <span class="usage-overview-sub" id="ov24hReq">0 requests</span>
           </div>
           <div class="usage-overview-item">
             <div class="usage-overview-top"><i data-lucide="trending-up"></i> All-time usage</div>
-            <span class="usage-overview-value" id="ovTotalTok">0<small>tokens</small></span>
+            <span class="usage-overview-value" id="ovTotalTok">0<small>Tokens (est.)</small></span>
             <span class="usage-overview-sub" id="ovTotalReq">0 requests</span>
           </div>
           <div class="usage-overview-item">
             <div class="usage-overview-top"><i data-lucide="activity"></i> Request count</div>
-            <span class="usage-overview-value" id="ovTodayTok">0<small>tokens</small></span>
+            <span class="usage-overview-value" id="ovTodayTok">0<small>Tokens (est.)</small></span>
             <span class="usage-overview-sub" id="ovTodayReq">0 requests today</span>
           </div>
           <div class="usage-overview-item">
             <div class="usage-overview-top"><i data-lucide="piggy-bank"></i> Cache hits</div>
-            <span class="usage-overview-value" id="ovCacheHits">0<small>tokens</small></span>
+            <span class="usage-overview-value" id="ovCacheHits">0<small>Tokens (est.)</small></span>
             <span class="usage-overview-sub" id="ovCacheRate">Hit rate 0%</span>
           </div>
         </div>
@@ -436,14 +476,14 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Recent requests</span><button class="btn btn-sm" onclick="showPage('usage')">View all</button></div>
-          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Endpoint</th><th>Tokens</th><th>Status</th></tr></thead><tbody id="dashRecentRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
+          <table class="table"><thead><tr><th>Time</th><th>Model</th><th>Endpoint</th><th>Tokens (est.)</th><th>Status</th></tr></thead><tbody id="dashRecentRows"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody></table>
         </div>
       </section>
 
       <!-- Usage -->
       <section id="page-usage" style="display:none">
         <div class="page-head">
-          <div><h2 class="page-title">Usage</h2><p class="page-sub">Token usage statistics and request details</p></div>
+          <div><h2 class="page-title">Usage</h2><p class="page-sub">Estimated token usage and request performance</p></div>
           <div class="seg" id="usageRange">
             <button data-days="1" onclick="setUsageRange(1)">24h</button>
             <button data-days="7" class="active" onclick="setUsageRange(7)">7 days</button>
@@ -451,21 +491,24 @@ if (response.output_text) {
             <button data-days="90" onclick="setUsageRange(90)">90 days</button>
           </div>
         </div>
-        <div class="stats">
+        <div class="usage-estimate-note"><i data-lucide="info"></i><span><span>Gateway estimates only; Microsoft does not return billing token counts.</span> <span>History tokens are shown separately and excluded from totals.</span></span></div>
+        <div class="stats usage-stats">
           <div class="stat"><span class="stat-label">Total requests</span><span class="stat-value" id="ug-req">0</span><span class="stat-sub" id="ug-req-sub"></span></div>
-          <div class="stat"><span class="stat-label">Total tokens</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub" id="ug-tok-sub"></span></div>
-          <div class="stat"><span class="stat-label">Cached tokens</span><span class="stat-value" id="ug-cache">0</span><span class="stat-unit">tokens</span></div>
+          <div class="stat"><span class="stat-label">Estimated tokens</span><span class="stat-value" id="ug-tok">0</span><span class="stat-sub usage-stat-sub" id="ug-tok-sub"></span></div>
+          <div class="stat"><span class="stat-label">Success rate</span><span class="stat-value" id="ug-success">0%</span><span class="stat-sub usage-stat-sub" id="ug-success-sub"></span></div>
+          <div class="stat"><span class="stat-label">Average TTFT</span><span class="stat-value" id="ug-ttft">0</span><span class="stat-unit">ms</span><span class="stat-sub usage-stat-sub" id="ug-ttft-sub"></span></div>
+          <div class="stat"><span class="stat-label">P95 latency</span><span class="stat-value" id="ug-p95">0</span><span class="stat-unit">ms</span><span class="stat-sub usage-stat-sub" id="ug-p95-sub"></span></div>
           <div class="stat"><span class="stat-label">Average latency</span><span class="stat-value" id="ug-ms">0</span><span class="stat-unit">ms</span></div>
         </div>
         <div class="chart-grid">
           <div class="chart">
-            <div class="chart-title">Token usage trend</div>
-            <div class="chart-sub">Daily token consumption</div>
+            <div class="chart-title">Estimated token usage trend</div>
+            <div class="chart-sub">Estimated daily token consumption</div>
             <div id="ugTrendWrap"><svg id="ugTrend" viewBox="0 0 560 160" preserveAspectRatio="none" style="height:160px"></svg></div>
           </div>
           <div class="chart">
             <div class="chart-title">Model distribution</div>
-            <div class="chart-sub">Token usage by model</div>
+            <div class="chart-sub">Estimated token usage by model</div>
             <div id="ugModels"></div>
           </div>
           <div class="chart">
@@ -481,7 +524,9 @@ if (response.output_text) {
         </div>
         <div class="card">
           <div class="card-head"><span class="card-title">Request details</span><span style="font-size:11px;color:var(--muted)">Recent records</span></div>
-          <table class="table"><thead><tr><th>Time</th><th>Key</th><th>Model</th><th>Endpoint</th><th>Tokens</th><th>Latency</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody></table>
+          <div class="usage-table-wrap">
+            <table class="table usage-log-table"><thead><tr><th>Time</th><th>IP</th><th>Request ID</th><th>Model / Endpoint</th><th>Status</th><th>TTFT / Total</th><th>Tokens (est.)</th><th>Retries / Tools</th><th>Error</th></tr></thead><tbody id="ugLogRows"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody></table>
+          </div>
           <div class="pagination"><span id="ugPageInfo"></span><button class="btn btn-sm" id="ugPrev" onclick="ugPage(-1)">Previous</button><button class="btn btn-sm" id="ugNext" onclick="ugPage(1)">Next</button></div>
         </div>
       </section>
@@ -585,7 +630,7 @@ if (response.output_text) {
           <div class="card-head"><span class="card-title">Add proxy</span></div>
           <div class="card-body">
             <label class="form-label">Proxy URLs (one per line; bulk paste supported)</label>
-            <textarea class="form-input" id="proxyInput" rows="4" placeholder="http://user:pass@host:port&#10;socks5://127.0.0.1:1080&#10;https://proxy.example.com:443"></textarea>
+            <textarea class="form-input" id="proxyInput" rows="4" placeholder="http://proxy.example.com:8080&#10;socks5://127.0.0.1:1080&#10;https://proxy.example.com:443"></textarea>
             <div style="margin-top:12px;display:flex;gap:8px">
               <button class="btn primary" onclick="proxyAdd()"><i data-lucide="plus" style="width:14px;height:14px"></i> Add</button>
               <button class="btn" onclick="proxyTest()">Test connectivity</button>
@@ -613,7 +658,7 @@ if (response.output_text) {
       <!-- Settings -->
       <section id="page-settings" style="display:none">
         <h2 style="font-size:18px;font-weight:700;margin-bottom:16px">Settings</h2>
-        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:4141"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="120"></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
+        <div class="card"><div class="card-body"><div class="form-group"><label class="form-label">Listen address</label><input class="form-input" id="setListen" placeholder="127.0.0.1:4141"></div><div class="form-group"><label class="form-label">Chat timeout (seconds)</label><input class="form-input" id="setTimeout" type="number" placeholder="300"></div><div class="form-group"><label class="form-label">Stream resume attempts</label><input class="form-input" id="setResumeAttempts" type="number" min="0" max="2" placeholder="1"><p class="form-hint">Retry an interrupted text stream by continuing from its delivered tail. Use 0 to disable.</p></div><div class="form-group"><label class="form-label" for="languageSelect">Language</label><select class="form-input" id="languageSelect"><option value="en">English</option><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt-BR">Português (Brasil)</option><option value="ru">Русский</option><option value="ar">العربية</option></select><p class="form-hint">Choose the language used by the administration console.</p></div><div style="margin-top:16px"><button class="btn primary" onclick="saveSettings()">Save settings</button></div></div></div>
       </section>
     </div>
   </main>
@@ -667,9 +712,16 @@ if (response.output_text) {
       </div>
       <button class="modal-close" onclick="closeUseKey()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
     </div>
+    <div class="highlight-box warning">
+      <b>完整密钥不可恢复</b>
+      <p>系统只保存哈希值。需要新的可复制密钥时，请轮换此密钥；旧密钥会立即失效。</p>
+    </div>
     <div class="copy-field">
-      <input class="form-input" id="useKeyVal" readonly onclick="this.select()">
-      <button class="btn btn-sm" onclick="copyUseKey()">Copy</button>
+      <input class="form-input" id="useKeyVal" readonly>
+      <button class="btn btn-sm" id="copyUseKeyBtn" onclick="copyUseKey()" disabled>Copy unavailable</button>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" onclick="rotateKey(useKeyId)">Rotate key</button>
     </div>
     <div class="uke-tabs" id="useKeyClients"></div>
     <div class="uke-tabs" id="useKeyOs"></div>
@@ -746,6 +798,24 @@ const localeText={
   'Scheduling': {'zh-CN':'调度','zh-TW':'調度','ja':'スケジュール','ko':'스케줄링','es':'Programación','fr':'Planification','de':'Planung','pt-BR':'Agendamento','ru':'Планирование','ar':'الجدولة'},
   'Enabled': {'zh-CN':'已启用','zh-TW':'已啟用','ja':'有効','ko':'활성화됨','es':'Habilitado','fr':'Activé','de':'Aktiviert','pt-BR':'Ativado','ru':'Включено','ar':'مفعّل'},
   'Loading...': {'zh-CN':'加载中...','zh-TW':'載入中...','ja':'読み込み中...','ko':'로딩 중...','es':'Cargando...','fr':'Chargement...','de':'Wird geladen...','pt-BR':'Carregando...','ru':'Загрузка...','ar':'جارٍ التحميل...'},
+  'Estimated token usage and request performance': {'zh-CN':'估算 Token 用量与请求性能','zh-TW':'估算 Token 用量與要求效能','ja':'推定トークン使用量とリクエスト性能','ko':'예상 토큰 사용량 및 요청 성능','es':'Uso estimado de tokens y rendimiento de solicitudes','fr':'Utilisation estimée des tokens et performances des requêtes','de':'Geschätzte Token-Nutzung und Anfrageleistung','pt-BR':'Uso estimado de tokens e desempenho das solicitações','ru':'Оценка использования токенов и производительности запросов','ar':'الاستخدام التقديري للرموز وأداء الطلبات'},
+  'Gateway estimates only; Microsoft does not return billing token counts.': {'zh-CN':'仅为网关估算值；微软未返回真实计费 Token 数。','zh-TW':'僅為閘道估算值；微軟未回傳真實計費 Token 數。','ja':'ゲートウェイによる推定値です。Microsoft は課金トークン数を返しません。','ko':'게이트웨이 추정치이며 Microsoft는 청구 토큰 수를 반환하지 않습니다.','es':'Solo estimaciones del gateway; Microsoft no devuelve recuentos de tokens de facturación.','fr':'Estimations de la passerelle uniquement ; Microsoft ne renvoie pas le nombre de tokens facturés.','de':'Nur Gateway-Schätzwerte; Microsoft liefert keine Abrechnungs-Tokenzahlen.','pt-BR':'Apenas estimativas do gateway; a Microsoft não retorna contagens de tokens de cobrança.','ru':'Только оценка шлюза; Microsoft не возвращает число тарифицируемых токенов.','ar':'تقديرات البوابة فقط؛ لا تعيد Microsoft عدد رموز الفوترة.'},
+  'History tokens are shown separately and excluded from totals.': {'zh-CN':'历史上下文 Token 单独展示，不计入总量。','zh-TW':'歷史上下文 Token 單獨顯示，不計入總量。','ja':'履歴トークンは別表示され、合計には含まれません。','ko':'기록 토큰은 별도로 표시되며 합계에서 제외됩니다.','es':'Los tokens de historial se muestran por separado y se excluyen de los totales.','fr':'Les tokens d\'historique sont affichés séparément et exclus des totaux.','de':'Verlaufstokens werden separat angezeigt und nicht in die Gesamtsumme einbezogen.','pt-BR':'Os tokens de histórico são exibidos separadamente e excluídos dos totais.','ru':'Токены истории показаны отдельно и не входят в итоговое значение.','ar':'تُعرض رموز السجل بشكل منفصل ولا تُحتسب ضمن الإجمالي.'},
+  'Unknown': {'zh-CN':'未知','zh-TW':'未知','ja':'不明','ko':'알 수 없음','es':'Desconocido','fr':'Inconnu','de':'Unbekannt','pt-BR':'Desconhecido','ru':'Неизвестно','ar':'غير معروف'},
+  'Estimated tokens': {'zh-CN':'估算 Token','zh-TW':'估算 Token','ja':'推定トークン','ko':'예상 토큰','es':'Tokens estimados','fr':'Tokens estimés','de':'Geschätzte Tokens','pt-BR':'Tokens estimados','ru':'Оценка токенов','ar':'الرموز التقديرية'},
+  'Success rate': {'zh-CN':'成功率','zh-TW':'成功率','ja':'成功率','ko':'성공률','es':'Tasa de éxito','fr':'Taux de réussite','de':'Erfolgsquote','pt-BR':'Taxa de sucesso','ru':'Доля успешных запросов','ar':'معدل النجاح'},
+  'Average TTFT': {'zh-CN':'平均首字延迟','zh-TW':'平均首字延遲','ja':'平均 TTFT','ko':'평균 TTFT','es':'TTFT medio','fr':'TTFT moyen','de':'Durchschnittliche TTFT','pt-BR':'TTFT médio','ru':'Среднее TTFT','ar':'متوسط TTFT'},
+  'Stream resume attempts': {'zh-CN':'流式续接次数','zh-TW':'串流續接次數','ja':'ストリーム再開回数','ko':'스트림 재개 횟수','es':'Intentos de reanudación del flujo','fr':'Tentatives de reprise du flux','de':'Stream-Fortsetzungsversuche','pt-BR':'Tentativas de retomada do fluxo','ru':'Попытки продолжения потока','ar':'محاولات استئناف البث'},
+  'Retry an interrupted text stream by continuing from its delivered tail. Use 0 to disable.': {'zh-CN':'文本流异常中断时，从已输出内容末尾继续生成；设为 0 可关闭。','zh-TW':'文字串流異常中斷時，從已輸出內容末尾繼續生成；設為 0 可關閉。','ja':'中断したテキストストリームを出力済み末尾から再開します。0 で無効。','ko':'중단된 텍스트 스트림을 출력된 끝부분부터 재개합니다. 0이면 비활성화됩니다.','es':'Reanuda un flujo de texto interrumpido desde el final ya entregado. Usa 0 para desactivarlo.','fr':'Reprend un flux texte interrompu depuis la fin déjà transmise. Utilisez 0 pour désactiver.','de':'Setzt einen unterbrochenen Textstream ab dem bereits gelieferten Ende fort. 0 deaktiviert.','pt-BR':'Retoma um fluxo de texto interrompido a partir do trecho já entregue. Use 0 para desativar.','ru':'Продолжает прерванный текстовый поток с уже переданного конца. 0 отключает функцию.','ar':'يستأنف تدفق النص المنقطع من نهاية النص الذي تم تسليمه. استخدم 0 للتعطيل.'},
+  'P95 latency': {'zh-CN':'P95 总耗时','zh-TW':'P95 總耗時','ja':'P95 レイテンシ','ko':'P95 지연 시간','es':'Latencia P95','fr':'Latence P95','de':'P95-Latenz','pt-BR':'Latência P95','ru':'Задержка P95','ar':'زمن الاستجابة P95'},
+  'Estimated token usage trend': {'zh-CN':'估算 Token 使用趋势','zh-TW':'估算 Token 使用趨勢','ja':'推定トークン使用量の傾向','ko':'예상 토큰 사용 추세','es':'Tendencia estimada de uso de tokens','fr':'Tendance estimée de l\'utilisation des tokens','de':'Trend der geschätzten Token-Nutzung','pt-BR':'Tendência estimada de uso de tokens','ru':'Тренд оценочного использования токенов','ar':'اتجاه الاستخدام التقديري للرموز'},
+  'Estimated daily token consumption': {'zh-CN':'按天汇总的估算 Token 消耗','zh-TW':'按天彙總的估算 Token 消耗','ja':'日別の推定トークン消費量','ko':'일별 예상 토큰 소비','es':'Consumo diario estimado de tokens','fr':'Consommation quotidienne estimée de tokens','de':'Geschätzter täglicher Token-Verbrauch','pt-BR':'Consumo diário estimado de tokens','ru':'Оценочный ежедневный расход токенов','ar':'الاستهلاك اليومي التقديري للرموز'},
+  'Estimated token usage by model': {'zh-CN':'按模型统计的估算 Token 用量','zh-TW':'按模型統計的估算 Token 用量','ja':'モデル別の推定トークン使用量','ko':'모델별 예상 토큰 사용량','es':'Uso estimado de tokens por modelo','fr':'Utilisation estimée des tokens par modèle','de':'Geschätzte Token-Nutzung nach Modell','pt-BR':'Uso estimado de tokens por modelo','ru':'Оценочное использование токенов по моделям','ar':'الاستخدام التقديري للرموز حسب النموذج'},
+  'Request ID': {'zh-CN':'请求 ID','zh-TW':'要求 ID','ja':'リクエスト ID','ko':'요청 ID','es':'ID de solicitud','fr':'ID de requête','de':'Anfrage-ID','pt-BR':'ID da solicitação','ru':'ID запроса','ar':'معرّف الطلب'},
+  'Model / Endpoint': {'zh-CN':'模型 / 端点','zh-TW':'模型 / 端點','ja':'モデル / エンドポイント','ko':'모델 / 엔드포인트','es':'Modelo / Endpoint','fr':'Modèle / Endpoint','de':'Modell / Endpunkt','pt-BR':'Modelo / Endpoint','ru':'Модель / Эндпоинт','ar':'النموذج / نقطة النهاية'},
+  'TTFT / Total': {'zh-CN':'首字延迟 / 总耗时','zh-TW':'首字延遲 / 總耗時','ja':'TTFT / 合計','ko':'TTFT / 총 시간','es':'TTFT / Total','fr':'TTFT / Total','de':'TTFT / Gesamt','pt-BR':'TTFT / Total','ru':'TTFT / Всего','ar':'TTFT / الإجمالي'},
+  'Tokens (est.)': {'zh-CN':'Token（估算）','zh-TW':'Token（估算）','ja':'トークン（推定）','ko':'토큰(예상)','es':'Tokens (est.)','fr':'Tokens (est.)','de':'Tokens (gesch.)','pt-BR':'Tokens (est.)','ru':'Токены (оценка)','ar':'الرموز (تقديري)'},
+  'Retries / Tools': {'zh-CN':'重试 / 工具','zh-TW':'重試 / 工具','ja':'再試行 / ツール','ko':'재시도 / 도구','es':'Reintentos / Herramientas','fr':'Tentatives / Outils','de':'Wiederholungen / Tools','pt-BR':'Tentativas / Ferramentas','ru':'Повторы / Инструменты','ar':'إعادات المحاولة / الأدوات'},
   'Token usage statistics and request details': {'zh-CN':'Token 用量统计与请求明细','zh-TW':'Token 用量統計與要求明細','ja':'トークン使用量の統計とリクエスト詳細','ko':'토큰 사용 통계 및 요청 상세','es':'Estadísticas de uso de tokens y detalles de solicitudes','fr':'Statistiques d\'utilisation des tokens et détails des requêtes','de':'Token-Nutzungsstatistik und Anfragedetails','pt-BR':'Estatísticas de uso de tokens e detalhes de solicitações','ru':'Статистика использования токенов и детали запросов','ar':'إحصائيات استخدام الرموز وتفاصيل الطلبات'},
   '7 days': {'zh-CN':'7天','zh-TW':'7天','ja':'7日','ko':'7일','es':'7 días','fr':'7 jours','de':'7 Tage','pt-BR':'7 dias','ru':'7 дней','ar':'7 أيام'},
   '30 days': {'zh-CN':'30天','zh-TW':'30天','ja':'30日','ko':'30일','es':'30 días','fr':'30 jours','de':'30 Tage','pt-BR':'30 dias','ru':'30 дней','ar':'30 يومًا'},
@@ -925,7 +995,7 @@ function translatePage(){
   const nodes=[];let node;
   while(node=walker.nextNode()){if(!node.parentElement?.closest('script,style,pre,code,textarea'))nodes.push(node);}
   nodes.forEach(n=>{const translated=translateText(n.nodeValue);if(translated!==n.nodeValue)n.nodeValue=translated;});
-  document.querySelectorAll('[placeholder],[title],[aria-label]').forEach(el=>['placeholder','title','aria-label'].forEach(attr=>{if(el.hasAttribute(attr))el.setAttribute(attr,translateText(el.getAttribute(attr)));}));
+  document.querySelectorAll('[placeholder],[title],[aria-label],[data-label]').forEach(el=>['placeholder','title','aria-label','data-label'].forEach(attr=>{if(el.hasAttribute(attr))el.setAttribute(attr,translateText(el.getAttribute(attr)));}));
   const selector=$('languageSelect');if(selector)selector.value=currentLocale;
   document.documentElement.lang=currentLocale;
   document.documentElement.dir=currentLocale==='ar'?'rtl':'ltr';
@@ -1052,13 +1122,20 @@ async function loadStats(){
 async function loadRecentRequests(){
   try{
     const d=await api('/api/usage/logs?limit=6&offset=0');
-    const rows=(d.logs||[]).map(x=>`<tr>
-      <td style="font-size:12px;color:var(--muted)">${new Date(x.time).toLocaleString()}</td>
-      <td style="font-size:12px">${x.model||'-'}</td>
-      <td><span class="usage-status">${(x.endpoint||'-').replace('/v1/','')}</span></td>
-      <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b></span></td>
-      <td>${x.error?'<span class="usage-status err">Error</span>':'<span class="usage-status">Success</span>'}</td>
-    </tr>`).join('');
+    const rows=(d.logs||[]).map(x=>{
+      const status=usageStatusInfo(x);
+      const parsedTime=new Date(x.time);
+      const timeText=Number.isNaN(parsedTime.getTime())?String(x.time||'-'):parsedTime.toLocaleString();
+      const endpoint=String(x.endpoint||'-').replace(/^\/v1\//,'');
+      const tokenTotal=(Number(x.input_tokens)||0)+(Number(x.tool_tokens)||0)+(Number(x.output_tokens)||0)+(Number(x.cache_tokens)||0);
+      return `<tr>
+        <td style="font-size:12px;color:var(--muted)">${esc(timeText)}</td>
+        <td style="font-size:12px">${esc(x.model||'-')}</td>
+        <td><span class="usage-status">${esc(endpoint)}</span></td>
+        <td><span class="token-stack"><b>${esc(tokenTotal)}</b></span></td>
+        <td><span class="usage-status ${status.cssClass}">${esc(status.label)}</span></td>
+      </tr>`;
+    }).join('');
     $('dashRecentRows').innerHTML=rows||'<tr><td colspan="5" class="empty">No requests yet</td></tr>';
   }catch(e){$('dashRecentRows').innerHTML=`<tr><td colspan="5" class="empty">No requests yet</td></tr>`;}
 }
@@ -1151,6 +1228,7 @@ async function loadKeys(){
     const k=d.keys||[];
     $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${x.name}</b></td><td><code>${x.prefix}</code></td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
       <button class="btn-sm btn" onclick="openUseKey('${x.id}')">Use key</button>
+      <button class="btn-sm btn" onclick="rotateKey('${x.id}')">Rotate</button>
       <button class="btn-sm btn" onclick="editKey('${x.id}','${x.name.replace(/'/g,"\\'")}')">Edit</button>
       <button class="btn-sm btn ${x.revoked?'success':'danger'}" onclick="toggleKey('${x.id}',${x.revoked})">${x.revoked?'Enable':'Disable'}</button>
       <button class="btn-sm btn danger" onclick="revokeKey('${x.id}')">Delete</button>
@@ -1172,7 +1250,13 @@ async function toggleKey(id,revoked){
   catch(e){showNotice(e.message,'error');}
 }
 
-function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
+function openKeyModal(){
+  $('keyModal').classList.add('open');
+  $('keyModal').querySelector('form').style.display='block';
+  $('keyResult').style.display='none';
+  $('keyName').value='default';
+  setTimeout(()=>$('keyName').focus(),50);
+}
 function closeKeyModal(){$('keyModal').classList.remove('open');}
 async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('已复制','success');}catch(e){}}
 async function createKey(e){
@@ -1180,6 +1264,20 @@ async function createKey(e){
   try{
     const d=await api('/api/admin/keys',{method:'POST',body:JSON.stringify({name:$('keyName').value||'default'})});
     $('keyValue').value=d.key;$('keyResult').style.display='block';copyKey();loadKeys();
+  }catch(e){showNotice(e.message,'error');}
+}
+async function rotateKey(id){
+  if(!confirm('轮换后旧密钥会立即失效，确定继续吗？'))return;
+  try{
+    const d=await api('/api/admin/keys/rotate',{method:'POST',body:JSON.stringify({id})});
+    $('keyModal').classList.add('open');
+    $('keyModal').querySelector('form').style.display='none';
+    $('keyName').value=d.record?.name||'API key';
+    $('keyValue').value=d.key||'';
+    $('keyResult').style.display='block';
+    closeUseKey();
+    showNotice('已轮换密钥，请立即复制保存','success');
+    loadKeys();
   }catch(e){showNotice(e.message,'error');}
 }
 async function revokeKey(id){if(!confirm('确定删除此密钥？'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
@@ -1200,6 +1298,31 @@ function fmtNum(n){
   if(n>=1e3)return (n/1e3).toFixed(1)+'K';
   return String(n);
 }
+function fmtMetric(n,fallback='-'){
+  if(n===null||n===undefined||n==='')return fallback;
+  const value=Number(n);
+  return Number.isFinite(value)?Math.round(value).toLocaleString():fallback;
+}
+function fmtDuration(n){const value=fmtMetric(n);return value==='-'?value:value+' ms';}
+function usageStatusInfo(x){
+  const rawStatus=x.status_code??x.http_status??x.status;
+  const statusValue=String(rawStatus??'').trim();
+  const statusLower=statusValue.toLowerCase();
+  const errorValue=typeof x.error==='string'?x.error.trim():'';
+  const explicitError=x.error===true||x.error===1||x.error==='1'||(errorValue&&errorValue.toLowerCase()!=='false');
+  const numericStatus=statusValue===''?NaN:Number(rawStatus);
+  const partial=Boolean(x.partial);
+  const recovered=Boolean(x.stream_recovered);
+  const failed=Boolean(explicitError||x.error_type||x.error_message||['error','failed','failure'].includes(statusLower)||(Number.isFinite(numericStatus)&&numericStatus>=400));
+  const succeeded=!failed&&(['success','ok','completed'].includes(statusLower)||(Number.isFinite(numericStatus)&&numericStatus>=200&&numericStatus<400));
+  return {
+    state:partial?'partial':failed?'error':recovered?'recovered':succeeded?'success':'unknown',
+    label:partial?'Partial':failed?'Error':recovered?'Recovered':succeeded?'Success':'Unknown',
+    cssClass:partial?'partial':failed?'err':recovered?'recovered':succeeded?'':'unknown',
+    statusValue,
+    errorValue,
+  };
+}
 
 function setUsageRange(days){
   usageDays=days;
@@ -1215,16 +1338,24 @@ async function loadUsage(){
     $('ug-req').textContent=fmtNum(s.requests);
     $('ug-req-sub').textContent='Today +'+(s.today_requests||0);
     $('ug-tok').textContent=fmtTok(s.tokens);
-    $('ug-tok-sub').textContent='Input '+(s.input||0)+' · Output '+(s.output||0);
-    $('ug-cache').textContent=fmtTok(s.cache);
-    $('ug-ms').textContent=(s.avg_ms||0).toLocaleString();
+    $('ug-tok-sub').textContent='in '+(s.input||0)+' · tools '+(s.tools||0)+' · history '+(s.history||0)+' (excluded) · out '+(s.output||0)+' · cache '+(s.cache||0);
+    const successRate=Number(s.success_rate);
+    const successRequests=s.success_requests??s.successes??0;
+    const errorRequests=s.error_requests??s.errors??0;
+    $('ug-success').textContent=(Number.isFinite(successRate)?successRate:0).toFixed(1)+'%';
+    $('ug-success-sub').innerHTML='<span>Success</span> '+fmtNum(successRequests)+' · <span>Error</span> '+fmtNum(errorRequests);
+    $('ug-ttft').textContent=fmtMetric(s.ttft_avg_ms);
+    $('ug-ttft-sub').textContent='P50 '+fmtDuration(s.ttft_p50_ms)+' · P95 '+fmtDuration(s.ttft_p95_ms);
+    $('ug-p95').textContent=fmtMetric(s.p95_ms);
+    $('ug-p95-sub').textContent='P50 '+fmtDuration(s.p50_ms)+' · P99 '+fmtDuration(s.p99_ms);
+    $('ug-ms').textContent=fmtMetric(s.avg_ms,'0');
     renderTrend((d.stats||{}).trend||[]);
     renderBars('ugModels',(d.stats||{}).models||[],m=>m.name,'tokens');
     renderBars('ugEndpoints',(d.stats||{}).endpoints||[],m=>m.endpoint,'tokens');
     renderBars('ugKeys',(d.stats||{}).keys||[],m=>m.api_key_prefix,'requests');
     loadUsageLogs();
   }catch(e){
-    $('ugLogRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;
+    $('ugLogRows').innerHTML=`<tr><td colspan="9" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1280,7 +1411,7 @@ function renderBars(id,items,labelFn,valKey){
     const v=i[valKey]||0;
     const lab=valKey==='requests'?(v+' req'):fmtTok(v);
     const cls=palettes[idx%palettes.length];
-    return `<div class="bar-row"><span class="bar-name">${labelFn(i)}</span><div class="bar-track"><div class="bar-fill ${cls}" style="width:${(v/max*100).toFixed(1)}%"></div></div><span class="bar-val">${lab}</span></div>`;
+    return `<div class="bar-row"><span class="bar-name">${esc(labelFn(i))}</span><div class="bar-track"><div class="bar-fill ${cls}" style="width:${(v/max*100).toFixed(1)}%"></div></div><span class="bar-val">${esc(lab)}</span></div>`;
   }).join('');
 }
 
@@ -1288,21 +1419,47 @@ async function loadUsageLogs(){
   try{
     const d=await api('/api/usage/logs?limit='+UG_PAGE+'&offset='+ugPageNo*UG_PAGE);
     ugTotal=d.total||0;
-    const rows=(d.logs||[]).map(x=>`<tr>
-      <td style="font-size:12px;color:var(--muted)">${new Date(x.time).toLocaleString()}</td>
-      <td><code style="font-size:11px" title="${x.api_key_prefix||'-'}">${x.api_key_prefix||'-'}</code></td>
-      <td style="font-size:12px">${x.model||'-'}</td>
-      <td><span class="usage-status">${(x.endpoint||'-').replace('/v1/','')}</span></td>
-      <td><span class="token-stack"><b>${(x.input_tokens||0)+(x.output_tokens||0)+(x.cache_tokens||0)}</b> in${x.input_tokens||0}/out${x.output_tokens||0}/cache${x.cache_tokens||0}</span></td>
-      <td style="font-size:12px;color:var(--muted)">${(x.duration_ms||0)} ms</td>
-    </tr>`).join('');
-    $('ugLogRows').innerHTML=rows||'<tr><td colspan="6" class="empty">No requests yet</td></tr>';
+    const labels={time:'Time',ip:'IP',request:'Request ID',route:'Model / Endpoint',status:'Status',latency:'TTFT / Total',tokens:'Tokens (est.)',activity:'Retries / Tools',error:'Error'};
+    Object.keys(labels).forEach(key=>labels[key]=esc(translateText(labels[key]).trim()));
+    const rows=(d.logs||[]).map(x=>{
+      const status=usageStatusInfo(x);
+      const errorType=String(x.error_type||(status.state==='error'?'Error':''));
+      const errorMessage=String(x.error_message||status.errorValue||'');
+      const parsedTime=new Date(x.time);
+      const timeText=Number.isNaN(parsedTime.getTime())?String(x.time||'-'):parsedTime.toLocaleString();
+      const ipMeta=[x.client_country,x.proxy].filter(Boolean).map(v=>esc(v)).join(' · ');
+      const requestMeta=[x.upstream_request_id?'Upstream '+esc(x.upstream_request_id):'',x.interrupted_request_id&&x.interrupted_request_id!==x.upstream_request_id?'Interrupted '+esc(x.interrupted_request_id):'',x.cf_ray?'CF '+esc(x.cf_ray):''].filter(Boolean).join(' · ');
+      const endpoint=String(x.endpoint||'-').replace(/^\/v1\//,'');
+      const routeMeta=[endpoint,x.api_key_prefix].filter(Boolean).map(v=>esc(v)).join(' · ');
+      const phaseMeta=[x.queue_ms==null?'':'Q '+fmtDuration(x.queue_ms),x.connect_ms==null?'':'C '+fmtDuration(x.connect_ms),x.last_delta_ms==null?'':'Last '+fmtDuration(x.last_delta_ms),x.tool_planning_ms==null?'':'Plan '+fmtDuration(x.tool_planning_ms)].filter(Boolean).join(' · ');
+      const inputTokens=Number(x.input_tokens)||0,toolTokens=Number(x.tool_tokens)||0,historyTokens=Number(x.history_tokens)||0,outputTokens=Number(x.output_tokens)||0,cacheTokens=Number(x.cache_tokens)||0;
+      const tokenTotal=inputTokens+toolTokens+outputTokens+cacheTokens;
+      const tokenMeta='in '+inputTokens+' · tools '+toolTokens+' · history '+historyTokens+' (excluded) · out '+outputTokens+' · cache '+cacheTokens+' · '+(x.conversation_reused?'reused':'fresh')+(x.usage_source?' · '+esc(x.usage_source):'');
+      const retryCount=Number(x.retry_count)||0,toolCount=Number(x.tool_call_count)||0;
+      const statusMeta=status.statusValue&&!['success','error','failed','failure','ok','completed'].includes(status.statusValue.toLowerCase())?esc(status.statusValue):'';
+      const failureMeta=[x.failure_stage,x.upstream_close_code?'close '+x.upstream_close_code:''].filter(Boolean).map(v=>esc(v)).join(' · ');
+      const errorHtml=(status.state==='error'||status.state==='partial'||status.state==='recovered')
+        ?`<span class="usage-cell-primary usage-error-type">${esc(status.state==='recovered'?'Recovered':errorType||status.label)}</span>${errorMessage?`<span class="usage-cell-secondary usage-error-message" title="${esc(errorMessage)}">${esc(errorMessage)}</span>`:''}${failureMeta?`<span class="usage-cell-secondary">${failureMeta}</span>`:''}`
+        :'<span class="usage-cell-secondary">-</span>';
+      return `<tr>
+        <td data-label="${labels.time}"><span class="usage-cell-primary">${esc(timeText)}</span></td>
+        <td data-label="${labels.ip}"><span class="usage-cell-primary">${esc(x.client_ip||'-')}</span>${ipMeta?`<span class="usage-cell-secondary">${ipMeta}</span>`:''}</td>
+        <td data-label="${labels.request}"><code class="usage-id" title="${esc(x.request_id||'-')}">${esc(x.request_id||'-')}</code>${requestMeta?`<span class="usage-cell-secondary">${requestMeta}</span>`:''}</td>
+        <td data-label="${labels.route}"><span class="usage-cell-primary">${esc(x.model||'-')}</span><span class="usage-cell-secondary">${routeMeta}</span></td>
+        <td data-label="${labels.status}"><span class="usage-status ${status.cssClass}">${esc(status.label)}</span>${statusMeta?`<span class="usage-cell-secondary">${statusMeta}</span>`:''}</td>
+        <td data-label="${labels.latency}"><span class="usage-cell-primary">${fmtDuration(x.ttft_ms)} / ${fmtDuration(x.duration_ms)}</span>${phaseMeta?`<span class="usage-cell-secondary">${phaseMeta}</span>`:''}</td>
+        <td data-label="${labels.tokens}"><span class="token-stack"><b>${tokenTotal}</b></span><span class="usage-cell-secondary">${tokenMeta}</span></td>
+        <td data-label="${labels.activity}"><span class="usage-cell-primary">${retryCount} / ${toolCount}</span></td>
+        <td data-label="${labels.error}" data-wide="true" class="usage-error-cell">${errorHtml}</td>
+      </tr>`;
+    }).join('');
+    $('ugLogRows').innerHTML=rows||'<tr><td colspan="9" class="empty">No requests yet</td></tr>';
     const totalPages=Math.max(1,Math.ceil(ugTotal/UG_PAGE));
     $('ugPageInfo').textContent=`Page ${ugPageNo+1} / ${totalPages} · ${ugTotal} total`;
     $('ugPrev').disabled=ugPageNo<=0;
     $('ugNext').disabled=ugPageNo>=totalPages-1;
   }catch(e){
-    $('ugLogRows').innerHTML=`<tr><td colspan="6" class="empty">${e.message}</td></tr>`;
+    $('ugLogRows').innerHTML=`<tr><td colspan="9" class="empty">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -1326,8 +1483,9 @@ async function openUseKey(id){
   const d=await api('/api/admin/keys');
   const rec=(d.keys||[]).find(x=>x.id===id);
   if(!rec){showNotice('找不到密钥','error');return;}
+  useKeyPrefix=rec.prefix||'';
   $('useKeyName').textContent='当前密钥：'+rec.name+' ('+rec.prefix+')';
-  $('useKeyVal').value=rec.raw||'';
+  $('useKeyVal').value=(rec.prefix||'sk-')+'••••••••';
   $('useKeyModal').classList.add('open');
   renderUkeTabs();
   renderUkeFiles();
@@ -1347,7 +1505,7 @@ function ukeFile(path,content){
 }
 function renderUkeFiles(){
   const base=location.origin;
-  const key=$('useKeyVal').value||useKeyPrefix;
+  const key='YOUR_M365_API_KEY';
   let html='';
   if(ukeClient==='curl'){
     html=ukeFile('Terminal',`curl ${base}/v1/chat/completions \\
@@ -1410,9 +1568,7 @@ goals = true`;
   $('useKeyFiles').innerHTML=html;
 }
 async function copyUseKey(){
-  const v=$('useKeyVal').value;
-  if(!v){showNotice('完整密钥不可用','error');return;}
-  try{await navigator.clipboard.writeText(v);showNotice('已复制','success');}catch(e){}
+  showNotice('完整密钥只在创建或轮换时显示，请先轮换密钥','error');
 }
 
 async function loadConversations(){
@@ -1586,16 +1742,19 @@ async function loadSettings(){
     const d=await api('/api/admin/settings');
     const v=d.settings||{};
     $('setListen').value=v.listenAddress||'';
-    $('setTimeout').value=v.chatTimeoutSeconds||120;
+    $('setTimeout').value=v.chatTimeoutSeconds||300;
+    $('setResumeAttempts').value=v.streamResumeAttempts??1;
   }catch(e){showNotice(e.message,'error');}
 }
 async function saveSettings(){
   try{
     const listen=$('setListen').value.trim();
     const timeout=$('setTimeout').value.trim();
+    const resumeAttempts=$('setResumeAttempts').value.trim();
     const body={};
     if(listen)body.listenAddress=listen;
     if(timeout)body.chatTimeoutSeconds=parseInt(timeout);
+    if(resumeAttempts!=='')body.streamResumeAttempts=parseInt(resumeAttempts);
     await api('/api/admin/settings',{method:'PUT',body:JSON.stringify(body)});
     showNotice('设置已保存','success');
   }catch(e){showNotice(e.message,'error');}

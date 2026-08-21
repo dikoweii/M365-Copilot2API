@@ -38,6 +38,47 @@ func (e *DialError) Error() string {
 	return fmt.Sprintf("ws dial: upstream %d", e.Status)
 }
 
+// StreamInterruptedError identifies a ChatHub stream that ended before the
+// SignalR completion frame. Callers may preserve the partial result and make a
+// bounded continuation attempt, but must not replay the original request.
+type StreamInterruptedError struct {
+	Stage     string
+	CloseCode int
+	Cause     error
+}
+
+func (e *StreamInterruptedError) Error() string {
+	if e == nil {
+		return "chathub stream interrupted"
+	}
+	if e.Cause == nil {
+		return fmt.Sprintf("chathub stream interrupted at %s", e.Stage)
+	}
+	return fmt.Sprintf("chathub stream interrupted at %s: %v", e.Stage, e.Cause)
+}
+
+func (e *StreamInterruptedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func IsStreamInterrupted(err error) bool {
+	var interrupted *StreamInterruptedError
+	return errors.As(err, &interrupted)
+}
+
+func completionFrameFailure(snapshot Result, cause error) (Result, error) {
+	if snapshot.Text == "" && snapshot.Reasoning == "" {
+		return Result{}, cause
+	}
+	snapshot.Incomplete = true
+	snapshot.FailureStage = "completion_error"
+	snapshot.UpstreamCloseCode = 0
+	return snapshot, &StreamInterruptedError{Stage: snapshot.FailureStage, Cause: cause}
+}
+
 var chTrace = os.Getenv("M365_TRACE") == "1"
 
 func truncate(s string, n int) string {
@@ -102,24 +143,32 @@ type StreamEvent struct {
 type StreamHandler func(StreamEvent) error
 
 type Result struct {
-	Text           string
-	Reasoning      string
-	ConversationID string
-	SessionID      string
-	RequestID      string
-	Throttling     any
-	RawResult      string
-	Events         []json.RawMessage
-	Normalized     []Event
-	Images         []string
+	Text              string
+	Reasoning         string
+	ConversationID    string
+	SessionID         string
+	RequestID         string
+	Throttling        any
+	RawResult         string
+	Events            []json.RawMessage
+	Normalized        []Event
+	Images            []string
+	ConnectMs         int64
+	FirstDeltaMs      int64
+	LastDeltaMs       int64
+	TotalMs           int64
+	ConnectionReused  bool
+	Incomplete        bool
+	FailureStage      string
+	UpstreamCloseCode int
 }
 
 type Client struct {
-	HTTPHeader  http.Header
-	HTTPClient  *http.Client
-	Dialer      *websocket.Dialer
-	Pool        *ConnPool
-	Trace       func(map[string]any)
+	HTTPHeader http.Header
+	HTTPClient *http.Client
+	Dialer     *websocket.Dialer
+	Pool       *ConnPool
+	Trace      func(map[string]any)
 }
 
 func NewClient() *Client {
@@ -281,6 +330,8 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 	var deltas []string
 	var streamed strings.Builder
+	var firstDeltaMs int64
+	var lastDeltaMs int64
 	emitDelta := func(d string) error {
 		if d == "" {
 			return nil
@@ -289,8 +340,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			log.Printf("[trace:emitDelta] len=%d streamed=%d preview=%q", len(d), streamed.Len()+len(d), truncate(d, 80))
 		}
 		if streamed.Len() == 0 {
-			log.Printf("chathub timing first_delta_ms=%d len=%d", time.Since(payloadSentAt).Milliseconds(), len(d))
+			firstDeltaMs = time.Since(payloadSentAt).Milliseconds()
+			log.Printf("chathub timing first_delta_ms=%d len=%d", firstDeltaMs, len(d))
 		}
+		lastDeltaMs = time.Since(payloadSentAt).Milliseconds()
 		streamed.WriteString(d)
 		deltas = append(deltas, d)
 		if onDelta != nil {
@@ -347,6 +400,35 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	var events []json.RawMessage
 	seenStreamTools := map[string]bool{}
 	var reasoningBuf strings.Builder
+	resultSnapshot := func(incomplete bool, stage string, closeCode int) Result {
+		text := streamed.String()
+		if text == "" {
+			text = final
+		}
+		if text == "" {
+			text = strings.Join(deltas, "")
+		}
+		return Result{
+			Text:              text,
+			Reasoning:         reasoningBuf.String(),
+			ConversationID:    req.ConversationID,
+			SessionID:         req.SessionID,
+			RequestID:         requestID,
+			Throttling:        throttling,
+			RawResult:         rawResult,
+			Events:            events,
+			Normalized:        NormalizeEvents(events),
+			Images:            imageURLs(events),
+			ConnectMs:         payloadSentAt.Sub(dialStarted).Milliseconds(),
+			FirstDeltaMs:      firstDeltaMs,
+			LastDeltaMs:       lastDeltaMs,
+			TotalMs:           time.Since(startedAt).Milliseconds(),
+			ConnectionReused:  reused,
+			Incomplete:        incomplete,
+			FailureStage:      stage,
+			UpstreamCloseCode: closeCode,
+		}
+	}
 
 	deadline := time.Now().Add(5 * time.Minute)
 	type wsRead struct {
@@ -365,6 +447,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 		select {
 		case <-ctx.Done():
 			returnConn = false
+			if streamed.Len() > 0 || reasoningBuf.Len() > 0 {
+				stage := "context_canceled"
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					stage = "context_deadline"
+				}
+				return resultSnapshot(true, stage, 0), &StreamInterruptedError{Stage: stage, Cause: ctx.Err()}
+			}
 			return Result{}, ctx.Err()
 		case read = <-readCh:
 		}
@@ -372,6 +461,18 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			returnConn = false
 			// Never convert a timeout or dropped WebSocket into a successful
 			// partial response. A response is complete only after SignalR type 3.
+			stage := "websocket_read"
+			closeCode := 0
+			var closeErr *websocket.CloseError
+			if errors.As(read.err, &closeErr) {
+				stage = "websocket_close"
+				closeCode = closeErr.Code
+			} else if timeout, ok := read.err.(interface{ Timeout() bool }); ok && timeout.Timeout() {
+				stage = "read_timeout"
+			}
+			if streamed.Len() > 0 || reasoningBuf.Len() > 0 {
+				return resultSnapshot(true, stage, closeCode), &StreamInterruptedError{Stage: stage, CloseCode: closeCode, Cause: read.err}
+			}
 			return Result{}, fmt.Errorf("ws read before completion: %w", read.err)
 		}
 		for _, part := range strings.Split(string(read.msg), rs) {
@@ -393,7 +494,14 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 			// SignalR ping
 			if int(t) == 6 {
-				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":6}`+rs))
+				if err := conn.SetWriteDeadline(time.Now().Add(15 * time.Second)); err != nil {
+					returnConn = false
+					return resultSnapshot(true, "ping_write_deadline", 0), &StreamInterruptedError{Stage: "ping_write_deadline", Cause: err}
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":6}`+rs)); err != nil {
+					returnConn = false
+					return resultSnapshot(true, "ping_write", 0), &StreamInterruptedError{Stage: "ping_write", Cause: err}
+				}
 				continue
 			}
 
@@ -475,13 +583,13 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					}
 					if res, ok := item["result"].(map[string]any); ok {
 						rawResult, _ = res["value"].(string)
-				if msg, ok := res["message"].(string); ok {
-						final = msg
-						if rateLimited(final) {
-							returnConn = false
-							return Result{}, ErrRateLimitNotice
+						if msg, ok := res["message"].(string); ok {
+							final = msg
+							if rateLimited(final) {
+								returnConn = false
+								return Result{}, ErrRateLimitNotice
+							}
 						}
-					}
 					}
 				}
 				// completion frame often follows; keep reading a bit but we already have content
@@ -491,7 +599,8 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			if int(t) == 3 {
 				if errObj, ok := obj["error"].(map[string]any); ok {
 					returnConn = false
-					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
+					cause := fmt.Errorf("chathub completion error: %v", errObj)
+					return completionFrameFailure(resultSnapshot(false, "", 0), cause)
 				}
 				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
 				text := streamed.String()
@@ -509,18 +618,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 					returnConn = false
 					return Result{}, ErrEmptyCompletion
 				}
-				return Result{
-					Text:           text,
-					Reasoning:      reasoningBuf.String(),
-					ConversationID: req.ConversationID,
-					SessionID:      req.SessionID,
-					RequestID:      requestID,
-					Throttling:     throttling,
-					RawResult:      rawResult,
-					Events:         events,
-					Normalized:     NormalizeEvents(events),
-					Images:         imageURLs(events),
-				}, nil
+				if firstDeltaMs == 0 {
+					firstDeltaMs = time.Since(payloadSentAt).Milliseconds()
+				}
+				return resultSnapshot(false, "", 0), nil
 			}
 		}
 	}
@@ -529,6 +630,10 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 	// an incomplete upstream response. Do not return accumulated deltas as if
 	// they were a successful, finished answer.
 	returnConn = false
+	if streamed.Len() > 0 || reasoningBuf.Len() > 0 {
+		const stage = "response_deadline"
+		return resultSnapshot(true, stage, 0), &StreamInterruptedError{Stage: stage, Cause: context.DeadlineExceeded}
+	}
 	return Result{}, fmt.Errorf("chathub response deadline exceeded before completion")
 }
 
@@ -568,25 +673,9 @@ func (c *Client) uploadAttachments(ctx context.Context, acc Account, conversatio
 		// For non-data URLs, download the image first
 		imageData := a.URL
 		if !strings.HasPrefix(a.URL, "data:") {
-			if err := validateRemoteDownloadURL(a.URL); err != nil {
+			body, mimeType, err := downloadRemoteImage(ctx, a.URL, maxAttachmentMiB<<20)
+			if err != nil {
 				return err
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.URL, nil)
-			if err != nil {
-				continue
-			}
-			resp, err := c.HTTPClient.Do(req)
-			if err != nil {
-				continue
-			}
-			body, err := io.ReadAll(io.LimitReader(resp.Body, maxAttachmentMiB<<20))
-			resp.Body.Close()
-			if err != nil || resp.StatusCode != http.StatusOK {
-				continue
-			}
-			mimeType := resp.Header.Get("Content-Type")
-			if mimeType == "" {
-				mimeType = "image/png"
 			}
 			imageData = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(body)
 		}

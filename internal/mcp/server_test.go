@@ -92,6 +92,27 @@ func TestScopedSessionToolsListNeverFallsBackToGlobalRegistry(t *testing.T) {
 	}
 }
 
+func TestScopedProviderQueuesToolCalls(t *testing.T) {
+	GlobalToolRegistry.ClearTools()
+	t.Cleanup(GlobalToolRegistry.ClearTools)
+	queue := NewToolCallQueue()
+	tools := []Tool{{Name: "workspace_read"}}
+	GlobalToolRegistry.RegisterProviderForScope("scope-call", tools, NewMCPToolProvider(tools, queue))
+
+	provider := GlobalToolRegistry.ProviderForScope("scope-call")
+	if provider == nil {
+		t.Fatal("scoped provider missing")
+	}
+	result, err := provider.CallTool(context.Background(), "workspace_read", map[string]any{"path": "README.md"})
+	if err != nil || len(result.Content) == 0 {
+		t.Fatalf("call result=%#v err=%v", result, err)
+	}
+	queued := queue.DequeueNonBlocking()
+	if queued == nil || queued.Name != "workspace_read" || queued.Arguments["path"] != "README.md" {
+		t.Fatalf("queued call=%#v", queued)
+	}
+}
+
 func TestScopedSSESessionsKeepJSONRPCToolsIsolated(t *testing.T) {
 	GlobalToolRegistry.ClearTools()
 	GlobalToolRegistry.RegisterToolsForScope("scope-a", []Tool{{Name: "workspace_read"}})

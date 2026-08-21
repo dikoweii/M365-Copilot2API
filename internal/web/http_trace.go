@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
@@ -46,10 +47,17 @@ func httpTrace(next http.Handler) http.Handler {
 		tw := &traceWriter{ResponseWriter: w}
 		log.Printf("[http-trace] id=%s stage=start method=%s path=%s", requestIDFrom(r), r.Method, r.URL.Path)
 		next.ServeHTTP(tw, r)
-		status := tw.status
-		if status == 0 {
-			status = http.StatusOK
-		}
+		status := traceCompletionStatus(tw.status, r.Context().Err())
 		log.Printf("[http-trace] id=%s stage=end status=%d bytes=%d total_ms=%d", requestIDFrom(r), status, tw.bytes, time.Since(start).Milliseconds())
 	})
+}
+
+func traceCompletionStatus(status int, contextErr error) int {
+	if status != 0 {
+		return status
+	}
+	if contextErr == context.Canceled {
+		return statusClientClosedRequest
+	}
+	return http.StatusOK
 }

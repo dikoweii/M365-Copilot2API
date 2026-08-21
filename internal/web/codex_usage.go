@@ -103,17 +103,31 @@ func estimateResponsesUsage(model string, input []oaiMsg, tools []chathub.Tool, 
 			in += serializedTokenCount(call, count)
 		}
 	}
-	for _, tool := range tools {
-		in += toolProtocolTokens + serializedTokenCount(tool, count)
-	}
-	if toolChoice != nil {
-		in += toolChoiceProtocolTokens + serializedTokenCount(toolChoice, count)
-	}
+	in += estimateToolTokensWithCounter(count, tools, toolChoice)
 	out := count(output)
 	if output != "" {
 		out += outputProtocolTokens
 	}
 	return responsesUsageEstimate{Values: map[string]any{"input_tokens": in, "output_tokens": out, "total_tokens": in + out}, Source: source}
+}
+
+func estimateToolTokens(model string, tools []chathub.Tool, toolChoice any) int {
+	count, _ := tokenEstimator(model)
+	return estimateToolTokensWithCounter(count, tools, toolChoice)
+}
+
+func estimateToolTokensWithCounter(count func(string) int, tools []chathub.Tool, toolChoice any) int {
+	if len(tools) == 0 {
+		return 0
+	}
+	total := 0
+	for _, tool := range tools {
+		total += toolProtocolTokens + serializedTokenCount(tool, count)
+	}
+	if toolChoice != nil {
+		total += toolChoiceProtocolTokens + serializedTokenCount(toolChoice, count)
+	}
+	return total
 }
 
 func localUsageMetadata(source string) map[string]any {

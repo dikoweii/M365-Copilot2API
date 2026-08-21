@@ -1,7 +1,9 @@
 package web
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -12,7 +14,7 @@ import (
 	"time"
 )
 
-const defaultAdminPassword = "admin123"
+const compromisedLegacyAdminPasswordSHA256 = "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9"
 
 type loginAttempt struct {
 	Failures                 int
@@ -34,29 +36,37 @@ func adminPasswordPath() string {
 }
 func loadAdminPassword() (string, bool) {
 	// The writable persisted value takes precedence over bootstrap sources.
+	persistedCompromised := false
 	if b, e := os.ReadFile(adminPasswordPath()); e == nil && strings.TrimSpace(string(b)) != "" {
 		p := strings.TrimSpace(string(b))
-		if p == defaultAdminPassword {
-			// A leftover persisted file holding the default password (for
-			// example a clone of a previously initialized data directory)
-			// must not silently defeat an explicit M365_ADMIN_PASSWORD.
-			if envP := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD")); envP != "" {
-				_ = saveAdminPassword(envP)
-				return envP, envP == defaultAdminPassword
-			}
+		if !isCompromisedAdminPassword(p) {
+			return p, false
 		}
-		return p, p == defaultAdminPassword
+		persistedCompromised = true
 	}
 	if bootstrap := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE")); bootstrap != "" {
 		if b, e := os.ReadFile(bootstrap); e == nil && strings.TrimSpace(string(b)) != "" {
 			p := strings.TrimSpace(string(b))
-			return p, p == defaultAdminPassword
+			if !isCompromisedAdminPassword(p) {
+				return p, false
+			}
 		}
 	}
 	if p := strings.TrimSpace(os.Getenv("M365_ADMIN_PASSWORD")); p != "" {
-		return p, p == defaultAdminPassword
+		if isCompromisedAdminPassword(p) {
+			return "", false
+		}
+		if persistedCompromised {
+			_ = saveAdminPassword(p)
+		}
+		return p, false
 	}
-	return defaultAdminPassword, true
+	return "", false
+}
+
+func isCompromisedAdminPassword(password string) bool {
+	digest := sha256.Sum256([]byte(password))
+	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(digest[:])), []byte(compromisedLegacyAdminPasswordSHA256)) == 1
 }
 func saveAdminPassword(password string) error {
 	p := adminPasswordPath()
@@ -68,7 +78,10 @@ func saveAdminPassword(password string) error {
 func clientIP(r *http.Request) string {
 	// Trust proxy headers only when the direct peer is loopback (normal local reverse-proxy deployment).
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if net.ParseIP(host).IsLoopback() {
+	if trustedProxyPeer(r) {
+		if ip := net.ParseIP(strings.TrimSpace(r.Header.Get("CF-Connecting-IP"))); ip != nil {
+			return ip.String()
+		}
 		// A trusted reverse proxy appends the client address to XFF. Use the
 		// right-most valid address rather than the attacker-controlled first one.
 		parts := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
@@ -84,11 +97,11 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 func validNewAdminPassword(p string) error {
-	if p == defaultAdminPassword {
-		return errors.New("new password must not be the default password")
+	if isCompromisedAdminPassword(p) {
+		return errors.New("new password is compromised and must not be used")
 	}
-	if len(p) < 6 {
-		return errors.New("new password must be at least 6 characters")
+	if len(p) < 12 {
+		return errors.New("new password must be at least 12 characters")
 	}
 	if len(p) > 256 {
 		return errors.New("new password is too long")

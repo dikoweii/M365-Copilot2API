@@ -24,6 +24,7 @@ type AccountToken struct {
 	TID              string    `json:"tid,omitempty"`
 	ClientID         string    `json:"clientId,omitempty"`
 	BoundProxy       string    `json:"boundProxy,omitempty"`
+	SSO              *SSOState `json:"sso,omitempty"`
 }
 
 type Cache struct {
@@ -31,12 +32,18 @@ type Cache struct {
 }
 
 type Store struct {
-	mu       sync.Mutex
-	path     string
-	data     Cache
-	nextIdx  int
-	inflight map[string]*inflightRefresh
+	mu        sync.Mutex
+	path      string
+	data      Cache
+	nextIdx   int
+	inflight  map[string]*inflightRefresh
+	ssoReauth SSOReauthFunc
+	refresh   func(string) (TokenSet, error)
 }
+
+// SSOReauthFunc obtains a fresh token set from an account's encrypted browser
+// SSO cookies after the normal refresh-token chain has permanently failed.
+type SSOReauthFunc func(AccountToken) (TokenSet, error)
 
 // inflightRefresh coalesces concurrent EnsureValid refreshes for the same
 // account: AAD refresh tokens can only be redeemed once, so a stampede of
@@ -71,7 +78,7 @@ func OpenStore(path string) (*Store, error) {
 	if path == "" {
 		path = CachePath()
 	}
-	s := &Store{path: path, data: Cache{Accounts: []AccountToken{}}}
+	s := &Store{path: path, data: Cache{Accounts: []AccountToken{}}, refresh: Refresh}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return s, nil
@@ -97,6 +104,14 @@ func OpenStore(path string) (*Store, error) {
 
 func (s *Store) Path() string {
 	return s.path
+}
+
+// SetSSOReauth installs the account-scoped silent reauthentication fallback.
+// The callback is invoked inside the existing per-account refresh singleflight.
+func (s *Store) SetSSOReauth(fn SSOReauthFunc) {
+	s.mu.Lock()
+	s.ssoReauth = fn
+	s.mu.Unlock()
 }
 
 func (s *Store) saveLocked() error {
@@ -209,6 +224,9 @@ func (s *Store) Upsert(tok TokenSet) (AccountToken, error) {
 			if acc.BoundProxy == "" {
 				acc.BoundProxy = existing.BoundProxy
 			}
+			if acc.SSO == nil {
+				acc.SSO = existing.SSO
+			}
 			s.data.Accounts[i] = acc
 			found = true
 			break
@@ -287,7 +305,7 @@ func (s *Store) EnsureValid(id string) (AccountToken, error) {
 	if time.Now().Before(acc.ExpiresAt.Add(-30 * time.Second)) {
 		return acc, nil
 	}
-	if acc.RefreshToken == "" {
+	if acc.RefreshToken == "" && !ssoConfigured(acc.SSO) {
 		acc.Status = "expired"
 		s.mu.Lock()
 		for i, a := range s.data.Accounts {
@@ -320,13 +338,39 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 	s.inflight[acc.ID] = f
 	s.mu.Unlock()
 
-	tok, err := Refresh(acc.RefreshToken)
+	var tok TokenSet
+	var err error
+	if acc.RefreshToken == "" {
+		err = fmtExpired()
+	} else {
+		refresh := s.refresh
+		if refresh == nil {
+			refresh = Refresh
+		}
+		tok, err = refresh(acc.RefreshToken)
+	}
+
+	s.mu.Lock()
+	ssoReauth := s.ssoReauth
+	s.mu.Unlock()
+	ssoAttempted := false
+	if err != nil && ssoReauth != nil && ssoConfigured(acc.SSO) && terminalCredentialError(err) && ssoRetryReady(acc.SSO, time.Now()) {
+		ssoAttempted = true
+		if ssoTok, ssoErr := ssoReauth(acc); ssoErr == nil {
+			tok = ssoTok
+			err = nil
+		} else {
+			err = ssoErr
+			_ = s.updateSSOResult(acc.ID, false, ssoErrorCode(ssoErr), time.Now())
+		}
+	}
 	if err != nil {
-		acc.Status = "expired"
 		s.mu.Lock()
-		for i, a := range s.data.Accounts {
-			if a.ID == acc.ID {
-				s.data.Accounts[i] = acc
+		for i := range s.data.Accounts {
+			if s.data.Accounts[i].ID == acc.ID {
+				s.data.Accounts[i].Status = "expired"
+				s.data.Accounts[i].UpdatedAt = time.Now()
+				acc = s.data.Accounts[i]
 				_ = s.saveLocked()
 				break
 			}
@@ -347,6 +391,10 @@ func (s *Store) refreshInflight(acc AccountToken) (AccountToken, error) {
 			tok.TenantID = acc.TID
 		}
 		f.acc, f.err = s.Upsert(tok)
+		if f.err == nil && ssoAttempted {
+			_ = s.updateSSOResult(f.acc.ID, true, "", time.Now())
+			f.acc, _ = s.Get(f.acc.ID)
+		}
 	}
 	close(f.done)
 	s.mu.Lock()
@@ -363,7 +411,7 @@ func (s *Store) RefreshAllExpired() []TokenRefreshResult {
 	s.mu.Lock()
 	candidates := make([]AccountToken, 0, len(s.data.Accounts))
 	for _, a := range s.data.Accounts {
-		if time.Now().After(a.ExpiresAt.Add(-30*time.Second)) && a.RefreshToken != "" {
+		if time.Now().After(a.ExpiresAt.Add(-30*time.Second)) && (a.RefreshToken != "" || ssoConfigured(a.SSO)) {
 			candidates = append(candidates, a)
 		}
 	}

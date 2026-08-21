@@ -2,7 +2,19 @@
 .env
 .env.*
 !.env.example
+.envrc
+.direnv/
 accounts.json
+accounts*.json
+api-keys.json
+credentials*.json
+oauth*.json
+tokens*.json
+sessions*.json
+conversations*.json
+settings.json
+usage.jsonl
+conversation-index.json
 *.token
 *.tokens
 *.har
@@ -17,6 +29,8 @@ cookies*.txt
 /dist/
 *.out
 *.log
+*.prof
+coverage/
 # Python/runtime artifacts
 __pycache__/
 *.py[cod]
@@ -42,6 +56,22 @@ test-results.jsonl
 server.log
 server-error.log
 *.pid
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.sqlite
+*.sqlite3
+*.db
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+/deploy/targets/*.conf
+!/deploy/targets/example.conf
+/docs/screenshots/
 
 # Local agent memory (machine-specific notes)
 AGENTS.md

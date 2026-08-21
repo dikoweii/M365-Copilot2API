@@ -26,8 +26,8 @@ func TestBuildAnswerRequestRouterOmitsNativePlugins(t *testing.T) {
 	if len(req.Tools) != 0 || req.ToolChoice != nil {
 		t.Fatalf("router answer leaked native tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
 	}
-	if req.Text != "[user]\nhello" {
-		t.Fatalf("empty ledger changed answer prompt: %q", req.Text)
+	if !strings.HasPrefix(req.Text, "[user]\nhello\n") || !strings.Contains(req.Text, callerWorkspaceBoundaryRule) {
+		t.Fatalf("router answer lost caller workspace boundary: %q", req.Text)
 	}
 }
 
@@ -35,6 +35,20 @@ func TestBuildAnswerRequestNativeForwardsTools(t *testing.T) {
 	req := buildAnswerRequest("[user]\nhello", "magic", answerRequestTestBody(), agentLedger{}, "native", "")
 	if len(req.Tools) != 1 || req.ToolChoice != "auto" {
 		t.Fatalf("native answer lost tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
+	}
+	if !strings.Contains(req.Text, callerWorkspaceBoundaryRule) {
+		t.Fatalf("native answer lost caller workspace boundary: %q", req.Text)
+	}
+}
+
+func TestBuildAnswerRequestPreservesCallerWindowsPath(t *testing.T) {
+	path := `E:\san\dsguomo\projects\guo-mo-chang\prose\drafts\chapter-010.md`
+	req := buildAnswerRequest("[user]\n请读取 "+path, "magic", answerRequestTestBody(), agentLedger{}, "router", "")
+	if !strings.Contains(req.Text, path) {
+		t.Fatalf("caller path was changed: %q", req.Text)
+	}
+	if !strings.Contains(req.Text, "/mnt/data") || !strings.Contains(req.Text, "Do not infer") {
+		t.Fatalf("answer prompt lacks provider-filesystem prohibition: %q", req.Text)
 	}
 }
 
@@ -64,6 +78,9 @@ func TestBuildAnswerRequestToolChoiceNoneOmitsTools(t *testing.T) {
 	req := buildAnswerRequest("[user]\nhello", "magic", body, agentLedger{}, "native", "http://127.0.0.1:4142/v1/mcp/sse")
 	if len(req.Tools) != 0 || req.ToolChoice != nil || req.MCPServerURL != "" {
 		t.Fatalf("tool_choice=none forwarded tools: tools=%d choice=%#v mcp=%q", len(req.Tools), req.ToolChoice, req.MCPServerURL)
+	}
+	if strings.Contains(req.Text, callerWorkspaceBoundaryRule) {
+		t.Fatalf("tool_choice=none should not add caller workspace rules: %q", req.Text)
 	}
 }
 

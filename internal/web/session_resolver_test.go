@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -145,6 +146,76 @@ func TestResolverIncrementalBoundary(t *testing.T) {
 		&oaiReq{Messages: []oaiMsg{{Role: "user", Content: "全新问题完全无关"}}})
 	if !res2.IsNew {
 		t.Fatalf("不相关内容必须新建会话, got %s conv=%s", res2.MatchedBy, res2.ConversationID)
+	}
+}
+
+func TestResolverMatchesLongHistoryTailWindow(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+
+	history := make([]oaiMsg, 190)
+	for i := range history {
+		role := "user"
+		if i%2 == 1 {
+			role = "assistant"
+		}
+		history[i] = oaiMsg{Role: role, Content: fmt.Sprintf("long-history-%03d", i+1)}
+	}
+	req := resolverTestRequest("203.0.113.10", "client-long", "alice")
+	sr.Bind("sess-long", "conv-long", "acc-long", &oaiReq{Messages: history}, "", req)
+
+	stored, ok := sr.GetSessionForTenant("local", "sess-long")
+	if !ok {
+		t.Fatal("long session was not stored")
+	}
+	if got := len(stored.ContextHistory); got != 128 {
+		t.Fatalf("stored history length = %d, want 128", got)
+	}
+	if !messagesEqual(stored.ContextHistory[0], history[62]) {
+		t.Fatal("stored history is not the tail of the prior request")
+	}
+
+	next := append([]oaiMsg(nil), history...)
+	next = append(next, oaiMsg{Role: "user", Content: "read chapter-010.md"})
+	res := sr.Resolve(resolverTestRequest("203.0.113.10", "client-long", "alice"), &oaiReq{Messages: next})
+	if res.IsNew || res.ConversationID != "conv-long" || res.AccountID != "acc-long" {
+		t.Fatalf("long history did not reuse its bound conversation: %#v", res)
+	}
+	if res.HistoryLen != 190 {
+		t.Fatalf("HistoryLen = %d, want absolute boundary 190", res.HistoryLen)
+	}
+	if res.MatchedBy != "context_window_190" {
+		t.Fatalf("MatchedBy = %q, want context_window_190", res.MatchedBy)
+	}
+	if got := next[res.HistoryLen:]; len(got) != 1 || contentToString(got[0].Content) != "read chapter-010.md" {
+		t.Fatalf("incremental messages = %#v, want only the new user turn", got)
+	}
+
+	other := sr.Resolve(resolverTestRequest("198.51.100.20", "client-other", "bob"), &oaiReq{Messages: next})
+	if !other.IsNew {
+		t.Fatalf("different IP/UA reused long session: %#v", other)
+	}
+}
+
+func TestResolverExplicitSessionUsesAbsoluteLongHistoryBoundary(t *testing.T) {
+	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+	sr := openSessionResolver()
+
+	history := make([]oaiMsg, 190)
+	for i := range history {
+		history[i] = oaiMsg{Role: "user", Content: fmt.Sprintf("explicit-%03d", i+1)}
+	}
+	bindReq := resolverTestRequest("203.0.113.10", "client-explicit", "alice")
+	bindReq.Header.Set("X-M365-Session-Id", "client-session")
+	sr.Bind("upstream-session", "conv-explicit", "acc-explicit", &oaiReq{Messages: history}, "", bindReq)
+
+	next := append([]oaiMsg(nil), history...)
+	next = append(next, oaiMsg{Role: "user", Content: "next"})
+	resolveReq := resolverTestRequest("203.0.113.10", "client-explicit", "alice")
+	resolveReq.Header.Set("X-M365-Session-Id", "client-session")
+	res := sr.Resolve(resolveReq, &oaiReq{Messages: next})
+	if res.IsNew || res.HistoryLen != 190 {
+		t.Fatalf("explicit long-session boundary = %#v, want HistoryLen 190", res)
 	}
 }
 

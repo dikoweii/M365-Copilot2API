@@ -13,7 +13,7 @@ import (
 // Responses events and completion shape consumed by Codex.
 func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src map[string]any) {
 	id := firstNonEmpty(fmt.Sprint(src["m365_response_id"]), "resp_"+uuid.NewString())
-	msg, _ := openAIChoice(src)
+	msg, finish := openAIChoice(src)
 	sanitizePublicAssistantMessage(msg, model)
 	var output []any
 	if calls, ok := msg["tool_calls"].([]any); ok {
@@ -41,7 +41,14 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 	if usageSource == "" {
 		usageSource = usageSourceHeuristic
 	}
-	resp := map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": "completed", "model": model, "output": output, "usage": usage, "m365": localUsageMetadata(usageSource)}
+	status := "completed"
+	if finish == "length" {
+		status = "incomplete"
+	}
+	resp := map[string]any{"id": id, "object": "response", "created_at": time.Now().Unix(), "status": status, "model": model, "output": output, "usage": usage, "m365": localUsageMetadata(usageSource)}
+	if status == "incomplete" {
+		resp["incomplete_details"] = map[string]any{"reason": "max_output_tokens"}
+	}
 	if !stream {
 		jsonOut(w, resp)
 		return
@@ -90,7 +97,47 @@ func writeResponsesResult(w http.ResponseWriter, model string, stream bool, src 
 		}
 		emit("response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": i, "item": item})
 	}
-	emit("response.completed", map[string]any{"type": "response.completed", "response": resp})
+	terminalEvent := "response.completed"
+	if status == "incomplete" {
+		terminalEvent = "response.incomplete"
+	}
+	emit(terminalEvent, map[string]any{"type": terminalEvent, "response": resp})
+}
+
+func applyResponsesOutputTokenLimit(usage map[string]any, maxOutputTokens int) {
+	if maxOutputTokens <= 0 || usage == nil {
+		return
+	}
+	outputTokens, ok := responsesUsageTokenCount(usage["output_tokens"])
+	if !ok {
+		return
+	}
+	if outputTokens > maxOutputTokens {
+		outputTokens = maxOutputTokens
+		usage["output_tokens"] = outputTokens
+	}
+	if inputTokens, ok := responsesUsageTokenCount(usage["input_tokens"]); ok {
+		usage["total_tokens"] = inputTokens + outputTokens
+	}
+}
+
+func responsesUsageTokenCount(value any) (int, bool) {
+	switch value := value.(type) {
+	case int:
+		return value, value >= 0
+	case int64:
+		converted := int(value)
+		return converted, value >= 0 && int64(converted) == value
+	case float64:
+		converted := int(value)
+		return converted, value >= 0 && float64(converted) == value
+	case json.Number:
+		parsed, err := value.Int64()
+		converted := int(parsed)
+		return converted, err == nil && parsed >= 0 && int64(converted) == parsed
+	default:
+		return 0, false
+	}
 }
 
 func customToolInput(arguments any) string {

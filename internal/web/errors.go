@@ -1,12 +1,15 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 
 	"m365-copilot2api/internal/auth"
+	"m365-copilot2api/internal/chathub"
 )
 
 func logOAuthError(stage string, err error) {
@@ -25,6 +28,20 @@ func upstreamError(err error) string {
 		return "upstream request failed"
 	}
 	log.Printf("upstream request failed: %v", err)
+	if IsAuthFailure(err) {
+		return "upstream authentication failed; refresh or replace the selected account"
+	}
+	var interrupted *chathub.StreamInterruptedError
+	if errors.As(err, &interrupted) {
+		return "upstream stream was interrupted; retry or resume the request"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "upstream request timed out; retry the request"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return "upstream transport failed; retry the request"
+	}
 	return "upstream request failed"
 }
 
@@ -37,6 +54,17 @@ func upstreamStatus(err error) int {
 	}
 	if IsAuthFailure(err) {
 		return http.StatusUnauthorized
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return http.StatusGatewayTimeout
+	}
+	var httpErr *UpstreamHTTPError
+	if errors.As(err, &httpErr) && (httpErr.Status == http.StatusRequestTimeout || httpErr.Status == http.StatusGatewayTimeout) {
+		return http.StatusGatewayTimeout
 	}
 	return http.StatusBadGateway
 }
@@ -60,4 +88,18 @@ func writeUpstreamError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeOpenAIError(w, status, "upstream_error", upstreamError(err))
+}
+
+const statusClientClosedRequest = 499
+
+// writePreStreamUpstreamError is used before any streaming response bytes have
+// been committed, so callers still receive the real HTTP failure status.
+func writePreStreamUpstreamError(w http.ResponseWriter, r *http.Request, trace *usageTrace, err error) {
+	if errors.Is(err, context.Canceled) && r.Context().Err() != nil {
+		trace.fail(statusClientClosedRequest, "client_cancelled", "client disconnected before the response completed")
+		return
+	}
+	status := upstreamStatus(err)
+	trace.fail(status, usageErrorType(status), sanitizePublicInternalText(upstreamError(err)))
+	writeUpstreamError(w, err)
 }

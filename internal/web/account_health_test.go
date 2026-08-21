@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,6 +34,7 @@ func TestUpstreamErrorClassification(t *testing.T) {
 		{fmt.Errorf("Too many requests, slow down"), true, false, 0, http.StatusTooManyRequests},
 		{fmt.Errorf("account is limited"), true, false, 0, http.StatusTooManyRequests},
 		{fmt.Errorf("random failure"), false, false, 0, http.StatusBadGateway},
+		{context.DeadlineExceeded, false, false, 0, http.StatusGatewayTimeout},
 		{chathub.ErrRateLimitNotice, true, false, 0, http.StatusTooManyRequests},
 	}
 	for _, c := range cases {
@@ -130,8 +132,54 @@ func TestCooldownExpiryClearsCallCount(t *testing.T) {
 	h.mu.Lock()
 	h.cooldown[authID] = time.Now().Add(-time.Second)
 	h.mu.Unlock()
-	if !h.Available(authID) || h.CallCount(authID) != 1 {
-		t.Fatal("auth cooldown must not clear call count")
+	if h.Available(authID) || h.CallCount(authID) != 1 {
+		t.Fatal("auth failure must remain pinned without clearing call count")
+	}
+}
+
+func TestAuthFailureRemainsPinnedUntilExplicitRecovery(t *testing.T) {
+	h := newAccountHealth()
+	const id = "acct-auth-pinned"
+	generation := h.MarkCall(id)
+	h.MarkResult(id, generation, &UpstreamHTTPError{Status: http.StatusUnauthorized}, time.Millisecond)
+
+	h.mu.Lock()
+	h.cooldown[id] = time.Now().Add(-time.Hour)
+	h.mu.Unlock()
+	if h.Available(id) {
+		t.Fatal("expired cooldown must not make an auth-failed account available")
+	}
+	state := h.Snapshot()[id]
+	if state == nil || state["authFailed"] != true || state["available"] != false {
+		t.Fatalf("auth failure snapshot = %#v", state)
+	}
+
+	h.ClearAllCooldowns()
+	if !h.Available(id) {
+		t.Fatal("explicit clear must restore auth-failed account availability")
+	}
+}
+
+func TestOlderConcurrentSuccessCannotClearNewerRateLimit(t *testing.T) {
+	h := newAccountHealth()
+	const id = "acct-concurrent-results"
+	olderSuccess := h.MarkCall(id)
+	newerFailure := h.MarkCall(id)
+
+	h.MarkResult(id, newerFailure, &UpstreamHTTPError{Status: http.StatusTooManyRequests}, 10*time.Minute)
+	h.MarkResult(id, olderSuccess, nil, 0)
+	// Existing callers may redundantly mark a successful request after the
+	// versioned result has already been applied.
+	h.MarkSuccess(id)
+	if h.Available(id) || !h.RateLimited(id) {
+		t.Fatal("older success cleared a newer rate-limit cooldown")
+	}
+
+	recovery := h.MarkCall(id)
+	h.MarkResult(id, recovery, nil, 0)
+	h.MarkSuccess(id)
+	if !h.Available(id) || h.RateLimited(id) {
+		t.Fatal("newer success did not recover historical rate-limit state")
 	}
 }
 
@@ -329,5 +377,71 @@ func TestErrRateLimitNoticeTriggersMarkFailure(t *testing.T) {
 	h.MarkFailure(id, chathub.ErrRateLimitNotice, 15*time.Minute)
 	if h.Available(id) {
 		t.Fatal("ErrRateLimitNotice must put account in cooldown")
+	}
+}
+
+func TestAccountHealthScorePrefersLowLatencyAndLowConcurrency(t *testing.T) {
+	h := newAccountHealth()
+	h.Observe("fast", 100*time.Millisecond, nil)
+	h.Observe("slow", 900*time.Millisecond, nil)
+	if h.Score("fast", 0) >= h.Score("slow", 0) {
+		t.Fatal("lower-latency account did not receive the better score")
+	}
+	if h.Score("fast", 1) <= h.Score("slow", 0) {
+		t.Fatal("an in-flight request should outweigh a modest latency advantage")
+	}
+	h.Observe("failing", time.Second, fmt.Errorf("temporary failure"))
+	if h.Score("failing", 0) <= h.Score("slow", 0) {
+		t.Fatal("observed failures should lower scheduling priority")
+	}
+}
+
+func TestResolveAccountPrefersObservedFastAccount(t *testing.T) {
+	store := testAccountFiles(t)
+	h := newAccountHealth()
+	h.Observe("u-1", 2500*time.Millisecond, nil)
+	h.Observe("u-2", 120*time.Millisecond, nil)
+	h.Observe("u-3", 1200*time.Millisecond, nil)
+	s := &Server{tokens: store, accountPool: h, accountConcurrency: newAccountConcurrency()}
+	acc, err := s.resolveAccount("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acc.ID != "u-2" {
+		t.Fatalf("selected account = %q, want fastest healthy account u-2", acc.ID)
+	}
+}
+
+func TestResolveAccountSkipsBestScoreWhenTokenCannotRefresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	store, err := auth.OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Upsert(auth.TokenSet{
+		HomeOID: "expired", Email: "expired@example.com", AccessToken: "expired-token",
+		ExpiresAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Upsert(auth.TokenSet{
+		HomeOID: "healthy", Email: "healthy@example.com", AccessToken: "healthy-token",
+		RefreshToken: "healthy-refresh", ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	health := newAccountHealth()
+	health.Observe("expired", 50*time.Millisecond, nil)
+	health.Observe("healthy", 500*time.Millisecond, nil)
+	s := &Server{tokens: store, accountPool: health, accountConcurrency: newAccountConcurrency()}
+	selected, err := s.resolveAccount("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ID != "healthy" {
+		t.Fatalf("selected account = %q, want healthy", selected.ID)
+	}
+	if health.Available("expired") {
+		t.Fatal("account with a permanently expired token remained schedulable")
 	}
 }

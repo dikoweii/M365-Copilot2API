@@ -36,19 +36,25 @@ def start():
         return
 
     env = os.environ.copy()
-    admin_pw = env.get("M365_ADMIN_PASSWORD", "admin123")
+    admin_pw = env.get("M365_ADMIN_PASSWORD", "").strip()
+    persisted_admin_password = os.path.join(DATA_DIR, "admin-password")
+    if not admin_pw and not os.path.isfile(persisted_admin_password):
+        print("M365_ADMIN_PASSWORD must be set for the first start.")
+        print("The value is persisted under data/admin-password after it is changed in the console.")
+        return
+
     env.update({
-        "M365_LISTEN": "0.0.0.0:4141",
+        "M365_LISTEN": env.get("M365_LISTEN", "127.0.0.1:4141"),
         "M365_DATA_DIR": os.path.join(DATA_DIR, ""),
         "M365_CONFIG": os.path.join(DATA_DIR, "accounts.json"),
         "M365_TOKEN_CACHE": os.path.join(DATA_DIR, "token-cache.json"),
         "M365_SESSION_CACHE": os.path.join(DATA_DIR, "sessions.json"),
         "M365_API_KEYS": os.path.join(DATA_DIR, "api-keys.json"),
-        "M365_ADMIN_PASSWORD": admin_pw,
         "M365_CLEANUP_MODE": "keep_n",
         "M365_CLEANUP_KEEP_N": "3",
-        "PATH": r"D:\go\bin;" + env.get("PATH", ""),
     })
+    if admin_pw:
+        env["M365_ADMIN_PASSWORD"] = admin_pw
 
     log = open(LOG_FILE, 'w')
     err = open(ERR_FILE, 'w')

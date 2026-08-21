@@ -237,7 +237,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 					AccountID:      sess.AccountID,
 					MatchedBy:      "explicit",
 					IsNew:          false,
-					HistoryLen:     len(sess.ContextHistory),
+					HistoryLen:     contextWindowEnd(sess.ContextHistory, body.Messages),
 				}
 			}
 		}
@@ -252,98 +252,35 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 				AccountID:      sess.AccountID,
 				MatchedBy:      "explicit",
 				IsNew:          false,
-				HistoryLen:     len(sess.ContextHistory),
+				HistoryLen:     contextWindowEnd(sess.ContextHistory, body.Messages),
 			}
 		}
 	}
 
-	// 鍐呭閿細鍗忚娑堟伅鍚嶅簭鍒椾弗鏍肩瓑浜庢煇涓凡璁板綍浼氳瘽鐨勫巻鍙叉椂鐩存帴澶嶇敤杩欎釜
-	// 浜戠瀵硅瘽锛屼絾鍙湪鍚屼竴 IP/UA 鎸囩汗涓嬶紝閬垮厤鐭秷鎭湪涓嶅悓鐢ㄦ埛闂翠簰绔?
-	// HistoryLen 杩斿洖璇ュ墠缂€闀垮害锛屼笂灞傛嵁姝ゅ彧鍙戦€?messages[HistoryLen:] 澧為噺銆?
+	// ContextHistory is a bounded tail window, not necessarily the beginning of
+	// the client request. Match that complete window inside the new request and
+	// return its absolute end index so callers can safely send messages[n:].
 	ipFinger := clientIPFingerprint(r)
 	if bestID, n := sr.matchContextLocked(tenantID, ipFinger, body.Messages); bestID != "" {
 		sess := sr.sessions[bestID]
 		sess.LastUsedAt = time.Now().UTC()
 		sr.sessions[bestID] = sess
 		sr.persist.markDirty()
+		matchedBy := fmt.Sprintf("context_window_%d", n)
+		if n == len(sess.ContextHistory) {
+			matchedBy = fmt.Sprintf("context_prefix_%d", n)
+		}
 		return ResolveResult{
 			SessionID:      sess.SessionID,
 			ConversationID: sess.ConversationID,
 			AccountID:      sess.AccountID,
-			MatchedBy:      fmt.Sprintf("context_prefix_%d", n),
+			MatchedBy:      matchedBy,
 			IsNew:          false,
 			HistoryLen:     n,
 		}
 	}
 
-	// 寮辩害鏉熷厹搴曪細鍐呭涓嶆瀯鎴愪弗鏍煎墠缂€锛屼絾涓庢煇涓巻鍙查珮搴︾浉浼硷紙濡傚鎴风
-	// 鏈湴鎴柇浜嗗巻鍙诧級锛屼粛澶嶇敤璇ヤ細璇濄€傛鏃跺閲忚竟鐣屾湭鐭ワ紝涓婂眰鍙戦€佸叏閲忋€?
-	suffixID, suffixN := sr.matchSuffixLocked(tenantID, ipFinger, body.Messages)
-	if suffixID != "" {
-		sess := sr.sessions[suffixID]
-		sess.LastUsedAt = time.Now().UTC()
-		sr.sessions[suffixID] = sess
-		sr.persist.markDirty()
-		return ResolveResult{
-			SessionID:      sess.SessionID,
-			ConversationID: sess.ConversationID,
-			AccountID:      sess.AccountID,
-			MatchedBy:      fmt.Sprintf("context_suffix_%d", suffixN),
-			IsNew:          false,
-			HistoryLen:     suffixN,
-		}
-	}
-
 	return ResolveResult{IsNew: true}
-}
-
-func (sr *sessionResolver) matchSuffixLocked(tenantID, ipFinger string, messages []oaiMsg) (string, int) {
-	if len(messages) < 2 {
-		return "", 0
-	}
-	type match struct {
-		id     string
-		n      int
-		recent time.Time
-	}
-	best := match{}
-	minSuffix := 2
-	for id, sess := range sr.sessions {
-		if sess.TenantID != tenantID {
-			continue
-		}
-		if time.Since(sess.LastUsedAt) > sr.contextTTL {
-			continue
-		}
-		if sess.IPFingerprint != ipFinger {
-			continue
-		}
-		hist := sess.ContextHistory
-		if len(hist) < minSuffix {
-			continue
-		}
-		n := suffixMatchLen(hist, messages)
-		if n >= minSuffix && (n > best.n || (n == best.n && sess.LastUsedAt.After(best.recent))) {
-			best = match{id: id, n: n, recent: sess.LastUsedAt}
-		}
-	}
-	return best.id, best.n
-}
-
-func suffixMatchLen(hist, msgs []oaiMsg) int {
-	maxN := len(hist)
-	if maxN > len(msgs) {
-		maxN = len(msgs)
-	}
-	n := 0
-	for i := 1; i <= maxN; i++ {
-		if messagesEqual(hist[len(hist)-i], msgs[len(msgs)-i]) {
-			n = i
-		} else {
-			break
-		}
-	}
-	return n
 }
 
 // matchContextLocked 浠庡叏閮ㄤ細璇濅腑鎵惧埌鍏?contextHistory 涓ユ牸浣滀负娑堟伅鍓嶇紑鐨?
@@ -355,7 +292,8 @@ func (sr *sessionResolver) matchContextLocked(tenantID, ipFinger string, message
 	}
 	type match struct {
 		id     string
-		n      int
+		end    int
+		window int
 		recent time.Time
 	}
 	best := match{}
@@ -369,26 +307,35 @@ func (sr *sessionResolver) matchContextLocked(tenantID, ipFinger string, message
 		if sess.IPFingerprint != ipFinger {
 			continue
 		}
-		n := contextPrefixLen(sess.ContextHistory, messages)
-		if n >= 1 && (n > best.n || (n == best.n && sess.LastUsedAt.After(best.recent))) {
-			best = match{id: id, n: n, recent: sess.LastUsedAt}
+		end := contextWindowEnd(sess.ContextHistory, messages)
+		window := len(sess.ContextHistory)
+		if end > 0 && (window > best.window || (window == best.window && sess.LastUsedAt.After(best.recent))) {
+			best = match{id: id, end: end, window: window, recent: sess.LastUsedAt}
 		}
 	}
-	return best.id, best.n
+	return best.id, best.end
 }
 
-// contextPrefixLen 杩斿洖 hist 鏄惁涓ユ牸鏄?msgs 鐨勫墠缂€銆俬ist 涓虹┖鎴栦笉鏄墠缂€
-// 鏃惰繑鍥?0锛涘懡涓椂杩斿洖 len(hist)锛屽嵆澧為噺鍙戦€佽捣鐐广€?
-func contextPrefixLen(hist, msgs []oaiMsg) int {
+// contextWindowEnd returns the absolute end index of the latest complete hist
+// window inside msgs. Hist is stored as a bounded tail of the prior request,
+// so requests longer than the cache limit can still reuse their conversation.
+func contextWindowEnd(hist, msgs []oaiMsg) int {
 	if len(hist) == 0 || len(msgs) < len(hist) {
 		return 0
 	}
-	for i := range hist {
-		if !messagesEqual(hist[i], msgs[i]) {
-			return 0
+	for start := len(msgs) - len(hist); start >= 0; start-- {
+		matched := true
+		for i := range hist {
+			if !messagesEqual(hist[i], msgs[start+i]) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return start + len(hist)
 		}
 	}
-	return len(hist)
+	return 0
 }
 
 // messagesEqual 鍒ゅ畾涓ゆ潯娑堟伅鍦ㄤ細璇濋敭鎰忎箟涓婄瓑浠凤細role 涓庢枃鏈唴瀹逛竴鑷淬€?

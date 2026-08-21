@@ -25,28 +25,6 @@ M365 Copilot2API 是一个用 Go 编写的自托管网关，把微软 365 Copilo
 > - 本项目**仅供个人学习与研究**，**禁止用于商业转售或规模化运营**。
 > - 账号被封禁、数据丢失等任何损失，本项目维护者与贡献者**概不负责**。
 
-## 界面预览
-
-<p align="center"><img src="docs/screenshots/02-dashboard.png" alt="仪表盘" style="max-width:860px;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.18)"></p>
-
-<table>
-  <tr>
-    <td align="center" width="33%"><img src="docs/screenshots/01-login.png" alt="登录页" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>登录</b></sub></td>
-    <td align="center" width="33%"><img src="docs/screenshots/03-usage.png" alt="用量统计" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>用量统计</b></sub></td>
-    <td align="center" width="33%"><img src="docs/screenshots/04-accounts.png" alt="账号管理" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>账号管理</b></sub></td>
-  </tr>
-  <tr>
-    <td align="center" width="33%"><img src="docs/screenshots/05-apikeys.png" alt="API Keys" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>API Keys</b></sub></td>
-    <td align="center" width="33%"><img src="docs/screenshots/06-conversations.png" alt="对话管理" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>对话管理</b></sub></td>
-    <td align="center" width="33%"><img src="docs/screenshots/07-proxies.png" alt="代理池" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>代理池</b></sub></td>
-  </tr>
-  <tr>
-    <td align="center" width="33%"><img src="docs/screenshots/08-modeltest.png" alt="模型测试" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>模型测试</b></sub></td>
-    <td align="center" width="33%"><img src="docs/screenshots/09-settings.png" alt="设置" style="border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.12)"><br><sub><b>设置</b></sub></td>
-    <td align="center" width="33%"><sub><i>更多功能，等你发现</i></sub></td>
-  </tr>
-</table>
-
 ## 功能特性
 
 | 功能 | 说明 |
@@ -117,7 +95,7 @@ chmod +x m365-copilot2api-linux-amd64
 git clone https://github.com/HEXUXIU/M365-Copilot2API.git
 cd M365-Copilot2API
 
-# 设置管理员密码（可选，默认 admin123），生产环境务必设置强密码
+# 首次启动前必须设置管理员密码；不要把真实值写入仓库
 $env:M365_ADMIN_PASSWORD = "your_strong_password"
 
 go build -o m365-copilot2api.exe ./cmd/server
@@ -131,29 +109,35 @@ go build -o m365-copilot2api ./cmd/server
 
 ### 启动
 
-Windows 上用 `manage.py` 启动（默认后台上运行，日志写入 `server.log` / `server-error.log`）：
+Windows 上用 `manage.py` 启动（默认后台运行，监听 `127.0.0.1:4141`，日志写入 `server.log` / `server-error.log`）：
 
 ```powershell
-python manage.py start    # 后台运行，默认监听 0.0.0.0:4141
+python manage.py start    # 后台运行
 python manage.py status   # 查看运行状态
 python manage.py logs     # 查看最近日志（可加参数 N 指定行数）
 python manage.py err      # 查看错误日志
 python manage.py stop     # 停止服务
 ```
 
-> `manage.py` 内部硬编码了仓库绝对路径（`D:\M365-Copilot2API\m365-copilot2api.exe` 等），克隆到其他目录时请先修改脚本顶部的路径常量，并确保先完成编译。
+> 首次运行 `manage.py` 前必须设置 `M365_ADMIN_PASSWORD`。脚本按自身目录查找二进制和数据目录，无需修改绝对路径。
 
 直接运行二进制则默认只监听内网 `http://127.0.0.1:4141`，可通过环境变量 `M365_LISTEN` 覆盖。
 
 ### Docker 部署
 
-> 官方不提供 Dockerfile。如需容器化部署，可自行基于预编译二进制或源码构建镜像，或在 Discussions 交流社区方案。
+仓库提供 `Dockerfile` 与 `docker-compose.yml`。首次启动前请通过 Docker secret 或环境变量配置管理员密码，并将 `/data` 持久化。
+
+### 生产发布
+
+生产环境使用版本目录、原子软链和独立状态目录。完整的一次性接管、发布、健康检查和回滚流程见
+[`docs/operations/production-release.md`](docs/operations/production-release.md)。创建不继承旧 Git 历史的隐私安全快照前，请执行
+[`docs/security/privacy-release-checklist.md`](docs/security/privacy-release-checklist.md)。
 
 ### 初始化与第一次调用
 
 浏览器打开控制台（默认 `http://127.0.0.1:4141`）：
 
-1. 用管理员密码登录（首次登录**强制要求修改密码**，默认密码 `admin123`）。
+1. 用部署时配置的管理员密码登录。未配置密码时，管理端会保持不可用。
 2. 在「账号」页点击**开始授权**：
    - 浏览器会弹出新窗口，跳转到 Microsoft 登录页。
    - 用你的 M365 账号完成登录。
@@ -174,8 +158,8 @@ python manage.py stop     # 停止服务
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `M365_LISTEN` | `127.0.0.1:4141` | 监听地址（`manage.py` 与 Docker 内置为 `0.0.0.0:4141`） |
-| `M365_ADMIN_PASSWORD` | `admin123` | 管理员密码（首次登录强制修改） |
+| `M365_LISTEN` | `127.0.0.1:4141` | 监听地址（Docker 内置为 `0.0.0.0:4141`） |
+| `M365_ADMIN_PASSWORD` | 无 | 首次启动的管理员密码；也可使用密码文件或 Docker secret，缺失时管理端不可用 |
 | `M365_DATA_DIR` | `~/.config/m365-copilot2api` | 数据目录（token、密钥、用量等集中存储；`manage.py` 内置为 `data/`） |
 | `M365_CONFIG` | `~/.config/m365-copilot2api/accounts.json` | 账号配置文件路径 |
 | `M365_SESSION_TTL_MINUTES` | `120` | 会话绑定存活时间（分钟），过期从 `sessions.json` 清除 |
@@ -212,7 +196,8 @@ python manage.py stop     # 停止服务
 | `M365_MAX_TOOL_ROUNDS` | `16` | 单次请求最大工具轮次 |
 | `M365_CONTEXT_WINDOW` | `128000` | 上下文窗口 |
 | `M365_MAX_OUTPUT_TOKENS` | `16384` | 最大输出 Token |
-| `M365_CHAT_TIMEOUT_SECONDS` | `120` | 聊天超时（秒） |
+| `M365_CHAT_TIMEOUT_SECONDS` | `300` | 单次聊天尝试超时（秒） |
+| `M365_STREAM_RESUME_ATTEMPTS` | `1` | 文本流中断后的续接次数，`0` 关闭，最大 `2` |
 | `M365_IMAGE_TIMEOUT_SECONDS` | `150` | 图片处理超时（秒） |
 
 ### 代理池与认证
@@ -232,6 +217,7 @@ python manage.py stop     # 停止服务
 |------|------|
 | `M365_TOKEN_CACHE` | Token 缓存文件（未设置时落到数据目录） |
 | `M365_SESSION_CACHE` | 会话绑定缓存文件（默认 `sessions.json`） |
+| `M365_CONVERSATION_INDEX` | 旧版 `/api/conversations` 与 `session_key` 使用的独立索引文件（默认与会话缓存同目录的 `conversation-index.json`） |
 | `M365_CONVERSATION_CACHE` | 本地对话索引（默认 `conversations.json`） |
 | `M365_API_KEYS` | API Key 存储文件 |
 | `M365_USAGE_LOG` | 用量统计日志（默认 `{data_dir}/usage.jsonl`） |
@@ -438,7 +424,7 @@ M365-Copilot2API/
 │   ├── multimodal_probe.py # 多模态图片输入探针（上传 + 注解流程）
 │   ├── test-recorder.ps1  # Windows 测试录制
 │   └── m365-upload-forensic-trace.user.js  # 上传取证脚本
-├── docs/screenshots/      # 界面截图
+├── docs/                  # 运维与安全文档
 ├── manage.py              # start / stop / status / logs / err 进程管理
 ├── docker-compose.yml · Dockerfile
 └── data/                  # 运行数据（由 M365_DATA_DIR 指定）

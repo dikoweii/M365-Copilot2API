@@ -126,33 +126,15 @@ func (p *MCPToolProvider) ListTools(ctx context.Context) ([]Tool, error) {
 }
 
 func (p *MCPToolProvider) CallTool(ctx context.Context, name string, arguments map[string]any) (CallResult, error) {
-	// Enqueue the tool call for the main flow to pick up
-	call := p.queue.Enqueue(name, arguments)
-
-	// Try to wait for the result, but return immediately if the client
-	// hasn't responded within a short timeout. The actual tool execution
-	// is handled by the standard OpenAI tool calling flow.
-	timeout := 30 * time.Second
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case result := <-call.ResultCh:
-		return result, nil
-	case err := <-call.ErrCh:
+	if err := ctx.Err(); err != nil {
 		return CallResult{}, err
-	case <-timer.C:
-		// Timeout - the tool call has been returned to the user's client.
-		// Return a pending result so the MCP client knows the tool is being
-		// executed. The actual result will be forwarded in a subsequent turn.
-		return CallResult{
-			Content: []map[string]any{
-				{"type": "text", "text": fmt.Sprintf("Tool call %s has been forwarded to the client for execution. The result will be provided in a subsequent turn.", name)},
-			},
-		}, nil
-	case <-ctx.Done():
-		return CallResult{}, ctx.Err()
 	}
+	p.queue.Enqueue(name, arguments)
+	return CallResult{
+		Content: []map[string]any{
+			{"type": "text", "text": fmt.Sprintf("Tool call %s was forwarded to the API client for execution.", name)},
+		},
+	}, nil
 }
 
 // UpdateTools replaces the tool list for the provider.

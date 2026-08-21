@@ -194,16 +194,58 @@ func maxToolRounds() int {
 	return 32
 }
 func activeMessages(messages []oaiMsg) []oaiMsg {
-	last := -1
+	start := -1
 	for i, m := range messages {
 		if m.Role == "user" {
-			last = i
+			start = i
 		}
 	}
-	if last <= 0 {
+	if start <= 0 {
 		return messages
 	}
-	return messages[last:]
+
+	// Some OpenAI-compatible clients serialize one internal tool-result block
+	// as both a user text message and a following role=tool message. In that
+	// shape the last user message is not a new turn: it is compatibility text
+	// for a tool call that appeared just before it. Walk matching results back
+	// to their assistant call so the active ledger retains the complete chain.
+	for {
+		callIndex := make(map[string]int)
+		for i := 0; i < len(messages); i++ {
+			if messages[i].Role != "assistant" {
+				continue
+			}
+			for _, raw := range messages[i].ToolCalls {
+				id, _ := raw["id"].(string)
+				if id != "" {
+					callIndex[id] = i
+				}
+			}
+		}
+		earliestCall := start
+		for i := start; i < len(messages); i++ {
+			if messages[i].Role != "tool" || messages[i].ToolCallID == "" {
+				continue
+			}
+			if callAt, ok := callIndex[messages[i].ToolCallID]; ok && callAt < earliestCall {
+				earliestCall = callAt
+			}
+		}
+		if earliestCall >= start {
+			break
+		}
+		previousUser := -1
+		for i := 0; i < earliestCall; i++ {
+			if messages[i].Role == "user" {
+				previousUser = i
+			}
+		}
+		if previousUser < 0 {
+			return messages
+		}
+		start = previousUser
+	}
+	return messages[start:]
 }
 func completionEvidenceAllows(answer string, l agentLedger) bool {
 	if len(l.Pending) > 0 {

@@ -20,7 +20,7 @@ are never written to the console.
 [CmdletBinding()]
 param(
     [ValidateNotNullOrEmpty()]
-    [string]$BaseUrl = 'https://m365.hanlaomo.dpdns.org',
+    [string]$BaseUrl = 'http://127.0.0.1:4141',
 
     [ValidateNotNullOrEmpty()]
     [string]$KeyPath = $(

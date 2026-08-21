@@ -25,6 +25,7 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	v.MaxToolCallsPerTurn = 1
 	v.MaxToolRounds = 32
 	v.ChatTimeoutSeconds = 60
+	v.StreamResumeAttempts = 1
 	v.ImageTimeoutSeconds = 90
 	if err := s.save(v); err != nil {
 		t.Fatal(err)
@@ -35,6 +36,11 @@ func TestSettingsPersistAndValidate(t *testing.T) {
 	v.MaxToolCallsPerTurn = 0
 	if err := s.save(v); err == nil {
 		t.Fatal("expected validation error")
+	}
+	v = defaultRuntimeSettings()
+	v.StreamResumeAttempts = 3
+	if err := validateSettings(v); err == nil {
+		t.Fatal("accepted more than two stream resume attempts")
 	}
 }
 

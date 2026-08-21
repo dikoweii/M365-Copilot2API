@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,31 @@ func TestModelCatalogAdvertisesGPTImage2(t *testing.T) {
 	t.Fatal("gpt-image-2 missing from model catalog")
 }
 
+func TestModelCatalogSeparatesVisionFromImageGeneration(t *testing.T) {
+	wantsImageGeneration := map[string]bool{"auto": true, "gpt-image-2": true}
+	seen := map[string]bool{}
+	for _, model := range modelCatalog() {
+		id, _ := model["id"].(string)
+		generation, _ := model["image_generation"].(bool)
+		if generation {
+			seen[id] = true
+		}
+		if generation != wantsImageGeneration[id] {
+			t.Fatalf("model %q image_generation=%t, want %t", id, generation, wantsImageGeneration[id])
+		}
+		if id == "gpt-image-2" {
+			if got := model["output_modalities"]; !reflect.DeepEqual(got, []string{"image"}) {
+				t.Fatalf("gpt-image-2 output_modalities=%#v", got)
+			}
+		}
+	}
+	for id := range wantsImageGeneration {
+		if !seen[id] {
+			t.Fatalf("image generation model %q missing from catalog", id)
+		}
+	}
+}
+
 func TestConfiguredModelMappingsDriveCatalogAndRouting(t *testing.T) {
 	mappings := []modelMapping{{PublicModel: "gpt-5.6-sol", UpstreamTone: "Gpt_5_6_Reasoning", DisplayName: "GPT-5.6-Sol", DefaultReasoningLevel: "low"}}
 	models := configuredModelSpecs(mappings)
@@ -176,7 +202,15 @@ func TestReasoningEffortRouting(t *testing.T) {
 		{"claude-sonnet", "high", "Claude_Sonnet_Reasoning"},
 		{"gpt-5.5", "low", "Gpt_5_5_Chat"},
 		{"gpt-5.5", "medium", "Gpt_5_5_Reasoning"},
+		{"gpt-5.6", "none", "magic"},
+		{"gpt-5.6", "minimal", "magic"},
+		{"gpt-5.6", "low", "magic"},
+		{"gpt-5.6", "medium", "Gpt_5_6_Reasoning"},
+		{"gpt-5.6", "high", "Gpt_5_6_Reasoning"},
+		{"gpt-5.6", "xhigh", "Gpt_5_6_Reasoning"},
 		{"gpt-5.6-reasoning", "none", "Gpt_5_6_Reasoning"},
+		{"gpt-5.6-reasoning", "low", "Gpt_5_6_Reasoning"},
+		{"gpt-5.6-reasoning", "xhigh", "Gpt_5_6_Reasoning"},
 	}
 	for _, tc := range cases {
 		got, err := reasoningTone(tc.model, tc.effort)

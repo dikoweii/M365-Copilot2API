@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -29,53 +28,26 @@ func postJSON(t *testing.T, c *http.Client, url, body string) *http.Response {
 	return r
 }
 
-func TestDefaultPasswordForcesChangeAndRotatesSessions(t *testing.T) {
+func TestMissingAdminPasswordDisablesConsole(t *testing.T) {
 	t.Setenv("M365_ADMIN_PASSWORD", "")
 	t.Setenv("M365_ADMIN_PASSWORD_FILE", t.TempDir()+"/admin-password")
+	t.Setenv("M365_ADMIN_PASSWORD_BOOTSTRAP_FILE", "")
 	s, err := New()
 	if err != nil {
 		t.Fatal(err)
 	}
 	ts, c := adminTestClient(t, s.Routes())
 
-	r := postJSON(t, c, ts.URL+"/api/admin/login", `{"password":"admin123"}`)
-	if r.StatusCode != 200 {
+	r := postJSON(t, c, ts.URL+"/api/admin/login", `{"password":"not-configured"}`)
+	if r.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("login=%d", r.StatusCode)
 	}
-	var login map[string]any
-	_ = json.NewDecoder(r.Body).Decode(&login)
 	r.Body.Close()
-	if login["must_change_password"] != true {
-		t.Fatalf("login=%#v", login)
-	}
 
 	r, _ = c.Get(ts.URL + "/api/accounts")
 	r.Body.Close()
-	if r.StatusCode != http.StatusForbidden {
+	if r.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("protected status=%d", r.StatusCode)
-	}
-
-	r = postJSON(t, c, ts.URL+"/api/admin/change-password", `{"current_password":"admin123","new_password":"a-new-password-123"}`)
-	if r.StatusCode != 200 {
-		t.Fatalf("change=%d", r.StatusCode)
-	}
-	r.Body.Close()
-
-	r, _ = c.Get(ts.URL + "/api/accounts")
-	r.Body.Close()
-	if r.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("old session status=%d", r.StatusCode)
-	}
-
-	r = postJSON(t, c, ts.URL+"/api/admin/login", `{"password":"a-new-password-123"}`)
-	r.Body.Close()
-	if r.StatusCode != 200 {
-		t.Fatalf("new login=%d", r.StatusCode)
-	}
-	r, _ = c.Get(ts.URL + "/api/accounts")
-	r.Body.Close()
-	if r.StatusCode != 200 {
-		t.Fatalf("new session status=%d", r.StatusCode)
 	}
 }
 

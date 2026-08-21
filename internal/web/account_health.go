@@ -94,15 +94,69 @@ func RetryAfterSeconds(err error) int {
 // cooled down and skipped by the round-robin until the window expires, and
 // auth-failed accounts are pinned as unusable.
 type accountHealth struct {
-	mu       sync.Mutex
-	cooldown map[string]time.Time
-	authFail map[string]bool
-	limited  map[string]bool
-	calls    map[string]uint64
+	mu                sync.Mutex
+	cooldown          map[string]time.Time
+	authFail          map[string]bool
+	limited           map[string]bool
+	calls             map[string]uint64
+	latency           map[string]float64
+	success           map[string]uint64
+	failures          map[string]uint64
+	generation        map[string]uint64
+	stateGeneration   map[string]uint64
+	successGeneration map[string]uint64
 }
 
 func newAccountHealth() *accountHealth {
-	return &accountHealth{cooldown: map[string]time.Time{}, authFail: map[string]bool{}, limited: map[string]bool{}, calls: map[string]uint64{}}
+	return &accountHealth{
+		cooldown: map[string]time.Time{}, authFail: map[string]bool{}, limited: map[string]bool{}, calls: map[string]uint64{},
+		latency: map[string]float64{}, success: map[string]uint64{}, failures: map[string]uint64{},
+		generation: map[string]uint64{}, stateGeneration: map[string]uint64{}, successGeneration: map[string]uint64{},
+	}
+}
+
+// Observe records an exponentially weighted response latency and a rolling
+// success/failure ratio used by account selection. Health cooldown remains the
+// hard eligibility boundary; this score only orders otherwise healthy peers.
+func (h *accountHealth) Observe(accountID string, latency time.Duration, err error) {
+	if h == nil || accountID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if err != nil {
+		h.failures[accountID]++
+		return
+	}
+	h.success[accountID]++
+	ms := float64(latency.Milliseconds())
+	if ms < 1 {
+		ms = 1
+	}
+	if previous := h.latency[accountID]; previous > 0 {
+		h.latency[accountID] = previous*0.8 + ms*0.2
+	} else {
+		h.latency[accountID] = ms
+	}
+}
+
+func (h *accountHealth) Score(accountID string, inflight int) float64 {
+	if h == nil {
+		return float64(inflight) * 1000
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
+	latency := h.latency[accountID]
+	if latency == 0 {
+		latency = 1500
+	}
+	total := h.success[accountID] + h.failures[accountID]
+	failureRate := 0.0
+	if total > 0 {
+		failureRate = float64(h.failures[accountID]) / float64(total)
+	}
+	return float64(inflight)*2000 + latency + failureRate*5000 + float64(h.calls[accountID])*0.01
 }
 
 func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
@@ -118,14 +172,17 @@ func (h *accountHealth) cleanupExpiredCooldownLocked(accountID string) {
 	}
 }
 
-func (h *accountHealth) MarkCall(accountID string) {
+func (h *accountHealth) MarkCall(accountID string) uint64 {
 	if h == nil || accountID == "" {
-		return
+		return 0
 	}
 	h.mu.Lock()
 	h.cleanupExpiredCooldownLocked(accountID)
 	h.calls[accountID]++
+	h.generation[accountID]++
+	generation := h.generation[accountID]
 	h.mu.Unlock()
+	return generation
 }
 
 func (h *accountHealth) CallCount(accountID string) uint64 {
@@ -149,39 +206,89 @@ func (h *accountHealth) RateLimited(accountID string) bool {
 }
 
 func (h *accountHealth) MarkFailure(accountID string, err error, window time.Duration) {
-	if window <= 0 {
-		window = 60 * time.Second
+	if h == nil || accountID == "" || (!IsAuthFailure(err) && !IsRateLimited(err)) {
+		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if IsAuthFailure(err) {
-		cooldown := window
-		if cooldown > 2*time.Minute {
-			cooldown = 2 * time.Minute
+	h.cleanupExpiredCooldownLocked(accountID)
+	if !h.authFail[accountID] && !h.limited[accountID] {
+		if h.generation[accountID] > 0 {
+			h.generation[accountID]++
+			h.stateGeneration[accountID] = h.generation[accountID]
 		}
-		h.cooldown[accountID] = time.Now().Add(cooldown)
-		delete(h.authFail, accountID)
-		delete(h.limited, accountID)
+	}
+	h.markFailureLocked(accountID, err, window)
+}
+
+// MarkResult applies a request result only when its start generation is not
+// older than the health state already observed for the account.
+func (h *accountHealth) MarkResult(accountID string, generation uint64, err error, window time.Duration) {
+	if h == nil || accountID == "" {
 		return
 	}
-	if IsRateLimited(err) {
-		delete(h.authFail, accountID)
-		h.limited[accountID] = true
-		cd := window
-		if ra := RetryAfterSeconds(err); ra > 0 {
-			cd = time.Duration(ra) * time.Second
-			if cd > 30*time.Minute {
-				cd = 30 * time.Minute
-			}
-		}
-		h.cooldown[accountID] = time.Now().Add(cd)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if generation > h.generation[accountID] {
+		h.generation[accountID] = generation
 	}
+	if err == nil {
+		if generation > h.successGeneration[accountID] {
+			h.successGeneration[accountID] = generation
+		}
+		if generation < h.stateGeneration[accountID] {
+			return
+		}
+		h.stateGeneration[accountID] = generation
+		h.clearFailureLocked(accountID)
+		return
+	}
+	if !IsAuthFailure(err) && !IsRateLimited(err) {
+		return
+	}
+	if generation < h.stateGeneration[accountID] {
+		return
+	}
+	h.stateGeneration[accountID] = generation
+	h.markFailureLocked(accountID, err, window)
 }
 
 // MarkSuccess clears any failure state after a healthy response.
 func (h *accountHealth) MarkSuccess(accountID string) {
+	if h == nil || accountID == "" {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
+	if h.stateGeneration[accountID] > h.successGeneration[accountID] && (h.authFail[accountID] || h.limited[accountID]) {
+		return
+	}
+	h.clearFailureLocked(accountID)
+}
+
+func (h *accountHealth) markFailureLocked(accountID string, err error, window time.Duration) {
+	if IsAuthFailure(err) {
+		h.authFail[accountID] = true
+		delete(h.cooldown, accountID)
+		delete(h.limited, accountID)
+		return
+	}
+	if window <= 0 {
+		window = 60 * time.Second
+	}
+	delete(h.authFail, accountID)
+	h.limited[accountID] = true
+	if ra := RetryAfterSeconds(err); ra > 0 {
+		window = time.Duration(ra) * time.Second
+		if window > 30*time.Minute {
+			window = 30 * time.Minute
+		}
+	}
+	h.cooldown[accountID] = time.Now().Add(window)
+}
+
+func (h *accountHealth) clearFailureLocked(accountID string) {
 	delete(h.cooldown, accountID)
 	delete(h.authFail, accountID)
 	delete(h.limited, accountID)
@@ -191,10 +298,10 @@ func (h *accountHealth) MarkSuccess(accountID string) {
 func (h *accountHealth) Available(accountID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.cleanupExpiredCooldownLocked(accountID)
 	if h.authFail[accountID] {
 		return false
 	}
-	h.cleanupExpiredCooldownLocked(accountID)
 	if until, ok := h.cooldown[accountID]; ok && time.Now().Before(until) {
 		return false
 	}
@@ -219,7 +326,7 @@ func (h *accountHealth) CooldownUntil(accountID string) (time.Time, bool) {
 func (h *accountHealth) Snapshot() map[string]map[string]any {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := make(map[string]map[string]any, len(h.cooldown)+len(h.authFail))
+	out := make(map[string]map[string]any, len(h.cooldown)+len(h.authFail)+len(h.latency))
 	for id, until := range h.cooldown {
 		out[id] = map[string]any{"available": time.Now().After(until), "cooldownUntil": until}
 	}
@@ -228,8 +335,17 @@ func (h *accountHealth) Snapshot() map[string]map[string]any {
 			if _, ok := out[id]; !ok {
 				out[id] = map[string]any{}
 			}
+			out[id]["available"] = false
 			out[id]["authFailed"] = true
 		}
+	}
+	for id, latency := range h.latency {
+		if _, ok := out[id]; !ok {
+			out[id] = map[string]any{}
+		}
+		out[id]["ewmaLatencyMs"] = int64(latency)
+		out[id]["successes"] = h.success[id]
+		out[id]["failures"] = h.failures[id]
 	}
 	return out
 }
@@ -241,6 +357,8 @@ func (h *accountHealth) ClearAllCooldowns() {
 	h.authFail = map[string]bool{}
 	h.limited = map[string]bool{}
 	h.calls = map[string]uint64{}
+	h.stateGeneration = map[string]uint64{}
+	h.successGeneration = map[string]uint64{}
 }
 
 // EarliestRecovery returns the earliest time at which any account may become

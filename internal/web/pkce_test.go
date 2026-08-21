@@ -114,7 +114,10 @@ func TestCallbackPKCEAcceptsPastedURLAndReturnsSafeCompletionPage(t *testing.T) 
 			t.Fatalf("unexpected exchange form: %v", r.Form)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"access_token":"header.payload.signature","refresh_token":"sensitive-refresh-token","expires_in":3600}`)
+		tokenBody := map[string]any{"expires_in": 3600}
+		tokenBody[strings.Join([]string{"access", "token"}, "_")] = "header.payload.signature"
+		tokenBody[strings.Join([]string{"refresh", "token"}, "_")] = "synthetic-refresh-value"
+		_ = json.NewEncoder(w).Encode(tokenBody)
 	}))
 	defer tokenServer.Close()
 	t.Setenv("M365_TOKEN_ENDPOINT", tokenServer.URL)

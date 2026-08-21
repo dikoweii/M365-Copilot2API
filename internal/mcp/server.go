@@ -28,6 +28,7 @@ const scopedToolTTL = 5 * time.Minute
 
 type scopedToolSet struct {
 	tools     []Tool
+	provider  ToolProvider
 	expiresAt time.Time
 }
 
@@ -76,6 +77,12 @@ func (r *toolRegistry) ClearTools() {
 
 // RegisterToolsForScope replaces the tools for one opaque request scope.
 func (r *toolRegistry) RegisterToolsForScope(scope string, tools []Tool) {
+	r.RegisterProviderForScope(scope, tools, nil)
+}
+
+// RegisterProviderForScope binds request-scoped schemas to the provider that
+// receives tools/call. A nil provider keeps the legacy discovery-only shape.
+func (r *toolRegistry) RegisterProviderForScope(scope string, tools []Tool, provider ToolProvider) {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
 		r.RegisterTools(tools)
@@ -89,6 +96,7 @@ func (r *toolRegistry) RegisterToolsForScope(scope string, tools []Tool) {
 	}
 	r.scoped[scope] = scopedToolSet{
 		tools:     append([]Tool(nil), tools...),
+		provider:  provider,
 		expiresAt: time.Now().Add(scopedToolTTL),
 	}
 }
@@ -107,6 +115,22 @@ func (r *toolRegistry) ListToolsForScope(scope string) []Tool {
 		return nil
 	}
 	return append([]Tool(nil), entry.tools...)
+}
+
+// ProviderForScope returns the exact provider registered for an opaque scope.
+func (r *toolRegistry) ProviderForScope(scope string) ToolProvider {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneExpiredLocked(time.Now())
+	entry, ok := r.scoped[scope]
+	if !ok {
+		return nil
+	}
+	return entry.provider
 }
 
 // ClearScope removes one request-scoped tool set.
@@ -166,12 +190,12 @@ type sessionRegistry struct {
 }
 
 type session struct {
-	id       string
+	id         string
 	providerMu sync.RWMutex
-	provider ToolProvider
-	created  time.Time
-	msgCh    chan json.RawMessage
-	done     chan struct{}
+	provider   ToolProvider
+	created    time.Time
+	msgCh      chan json.RawMessage
+	done       chan struct{}
 }
 
 // RegisterSession creates a new MCP session with the given tool provider and returns the session ID.
@@ -226,7 +250,10 @@ func HandleSSE(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unknown or expired tool scope", http.StatusNotFound)
 			return
 		}
-		provider = NewStaticToolProvider(tools, nil)
+		provider = GlobalToolRegistry.ProviderForScope(scope)
+		if provider == nil {
+			provider = NewStaticToolProvider(tools, nil)
+		}
 	}
 
 	// Create a new session.

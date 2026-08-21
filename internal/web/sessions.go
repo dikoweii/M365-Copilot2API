@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,9 +29,15 @@ type sessionStore struct {
 }
 
 func openSessionStore() *sessionStore {
-	path := os.Getenv("M365_SESSION_CACHE")
+	path := strings.TrimSpace(os.Getenv("M365_CONVERSATION_INDEX"))
 	if path == "" {
-		path = filepath.Join(os.TempDir(), "m365-copilot2api-sessions.json")
+		if sessionPath := strings.TrimSpace(os.Getenv("M365_SESSION_CACHE")); sessionPath != "" {
+			path = filepath.Join(filepath.Dir(sessionPath), "conversation-index.json")
+		} else if dataDir := strings.TrimSpace(os.Getenv("M365_DATA_DIR")); dataDir != "" {
+			path = filepath.Join(dataDir, "conversation-index.json")
+		} else {
+			path = filepath.Join(os.TempDir(), "m365-copilot2api-conversation-index.json")
+		}
 	}
 	s := &sessionStore{path: path, data: map[string]conversation{}}
 	s.persist = &persistStore{flush: s.flush}

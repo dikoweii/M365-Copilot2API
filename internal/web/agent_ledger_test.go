@@ -43,6 +43,38 @@ func TestAgentLedgerEvidenceAndUniqueCallIDs(t *testing.T) {
 	}
 }
 
+func TestActiveMessagesKeepsToolChainWithCompatibilityUserMessage(t *testing.T) {
+	messages := []oaiMsg{
+		{Role: "system", Content: "system"},
+		{Role: "user", Content: "inspect the current goal"},
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "call_1", "type": "function", "function": map[string]any{"name": "get_goal", "arguments": "{}"}}}},
+		{Role: "user", Content: `{"goal":null}`},
+		{Role: "tool", ToolCallID: "call_1", Content: `{"goal":null}`},
+	}
+	active := activeMessages(messages)
+	if len(active) != 4 || active[0].Role != "user" || len(active[1].ToolCalls) != 1 {
+		t.Fatalf("tool chain was truncated: %#v", active)
+	}
+	ledger := buildAgentLedger(active)
+	if len(ledger.Completed) != 1 || ledger.Completed[0].Name != "get_goal" {
+		t.Fatalf("completed tool evidence was not recovered: %#v", ledger)
+	}
+}
+
+func TestActiveMessagesStartsAtRealNewUserTurn(t *testing.T) {
+	messages := []oaiMsg{
+		{Role: "user", Content: "first task"},
+		{Role: "assistant", ToolCalls: []map[string]any{{"id": "call_1", "type": "function", "function": map[string]any{"name": "get_goal", "arguments": "{}"}}}},
+		{Role: "tool", ToolCallID: "call_1", Content: `{"goal":null}`},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "second task"},
+	}
+	active := activeMessages(messages)
+	if len(active) != 1 || contentToString(active[0].Content) != "second task" {
+		t.Fatalf("new user turn included old tool history: %#v", active)
+	}
+}
+
 func TestAgentLedgerDetectsRepeatedCallAndRoundLimit(t *testing.T) {
 	var msgs []oaiMsg
 	for i := 0; i < 4; i++ {

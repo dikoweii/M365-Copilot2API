@@ -93,6 +93,63 @@ func (s *apiKeyStore) create(name string) (apiKeyRecord, string, error) {
 		r.Raw = ""
 		return r, raw, nil
 	}
+
+// rotate revokes the existing key and creates a replacement atomically from
+// the caller's perspective. The replacement secret is returned only once.
+func (s *apiKeyStore) rotate(id string) (apiKeyRecord, string, error) {
+	b := make([]byte, 32)
+	if _, e := rand.Read(b); e != nil {
+		return apiKeyRecord{}, "", e
+	}
+	raw := "m365_" + hex.EncodeToString(b)
+	replacement := apiKeyRecord{
+		ID:        hex.EncodeToString(b[:8]),
+		Prefix:    raw[:12],
+		Hash:      keyHash(raw),
+		CreatedAt: time.Now(),
+	}
+
+	s.mu.Lock()
+	oldIndex := -1
+	for i := range s.Keys {
+		if s.Keys[i].ID == id {
+			oldIndex = i
+			replacement.Name = s.Keys[i].Name
+			break
+		}
+	}
+	if oldIndex < 0 {
+		s.mu.Unlock()
+		return apiKeyRecord{}, "", nil
+	}
+	oldRevoked := s.Keys[oldIndex].Revoked
+	s.Keys[oldIndex].Revoked = true
+	s.Keys = append(s.Keys, replacement)
+	s.mu.Unlock()
+
+	if err := s.persist.flushNowBlocking(); err != nil {
+		s.mu.Lock()
+		for i := range s.Keys {
+			if s.Keys[i].ID == replacement.ID {
+				s.Keys = append(s.Keys[:i], s.Keys[i+1:]...)
+				break
+			}
+		}
+		for i := range s.Keys {
+			if s.Keys[i].ID == id {
+				s.Keys[i].Revoked = oldRevoked
+				break
+			}
+		}
+		s.mu.Unlock()
+		return apiKeyRecord{}, "", err
+	}
+
+	replacement.Hash = ""
+	replacement.Raw = ""
+	return replacement, raw, nil
+}
+
 func (s *apiKeyStore) list() []apiKeyRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -155,7 +156,7 @@ func New() (*Server, error) {
 			sessionTTL = d
 		}
 	}
-	return &Server{
+	server := &Server{
 		tokens:             store,
 		accountPool:        newAccountHealth(),
 		accountConcurrency: newAccountConcurrency(),
@@ -180,7 +181,15 @@ func New() (*Server, error) {
 		usage:               openUsageLog(),
 		generatedImages:     map[string]generatedImage{},
 		convCache:           newConversationCache(),
-	}, nil
+	}
+	store.SetSSOReauth(func(acc auth.AccountToken) (auth.TokenSet, error) {
+		cookies, err := store.LoadSSOCookies(acc.ID)
+		if err != nil {
+			return auth.TokenSet{}, err
+		}
+		return auth.ReauthAccountWithCookies(acc, cookies)
+	})
+	return server, nil
 }
 
 func (s *Server) StartConvCacheGC() {
@@ -227,6 +236,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/session", s.adminSession)
 	m.HandleFunc("/api/admin/change-password", s.adminChangePassword)
 	m.HandleFunc("/api/admin/keys", s.adminKeys)
+	m.HandleFunc("/api/admin/keys/rotate", s.adminKeyRotate)
 	m.HandleFunc("/api/admin/models", s.adminModels)
 	m.HandleFunc("/api/admin/models/test", s.adminModelTest)
 	m.HandleFunc("/api/admin/models/sync", s.adminModelSync)
@@ -248,6 +258,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
 	m.HandleFunc("/api/accounts/provision", s.provisionAccount)
 	m.HandleFunc("/api/accounts/bind-proxy", s.bindProxy)
+	m.HandleFunc("/api/accounts/sso-cookie", s.accountSSOCookie)
 	m.HandleFunc("/api/auth/start", s.startPKCE)
 	m.HandleFunc("/api/auth/status", s.pkceStatus)
 	m.HandleFunc("/api/auth/callback", s.callbackPKCE)
@@ -275,6 +286,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
 	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)
 	m.HandleFunc("/v1/messages", s.anthropicMessages)
+	m.HandleFunc("/v1/messages/count_tokens", s.anthropicCountTokens)
 	m.HandleFunc("/v1/images/generations", s.imageGenerations)
 	m.HandleFunc("/v1/images/edits", s.imageEdits)
 	m.HandleFunc("/v1/images/files/", s.generatedImageFile)
@@ -485,6 +497,30 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) adminKeyRotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var b struct {
+		ID string `json:"id"`
+	}
+	if json.NewDecoder(r.Body).Decode(&b) != nil || strings.TrimSpace(b.ID) == "" {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	record, raw, err := s.apiKeys.rotate(b.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if record.ID == "" {
+		http.Error(w, "key not found", http.StatusNotFound)
+		return
+	}
+	jsonOut(w, map[string]any{"key": raw, "record": record})
+}
+
 type apiTenantContextKey struct{}
 
 func requestAPICredential(r *http.Request) string {
@@ -504,9 +540,6 @@ func (s *Server) authenticateAPIKey(r *http.Request) (string, bool) {
 		if id, ok := s.apiKeys.authenticate(raw); ok {
 			return "key:" + id, true
 		}
-	}
-	if strings.HasPrefix(raw, "eyJ") {
-		return "jwt:" + keyHash(raw), true
 	}
 	return "", false
 }
@@ -562,19 +595,20 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 	}
 	list := s.tokens.List()
 	type view struct {
-		ID              string     `json:"id"`
-		Email           string     `json:"email"`
-		DisplayName     string     `json:"displayName,omitempty"`
-		Status          string     `json:"status"`
-		ScheduleEnabled bool       `json:"scheduleEnabled"`
-		CallCount       uint64     `json:"callCount"`
-		RateLimited     bool       `json:"rateLimited"`
-		CooldownUntil   *time.Time `json:"cooldownUntil,omitempty"`
-		OID             string     `json:"oid,omitempty"`
-		TID             string     `json:"tid,omitempty"`
-		ExpiresAt       time.Time  `json:"expiresAt,omitempty"`
-		UpdatedAt       time.Time  `json:"updatedAt,omitempty"`
-		BoundProxy      string     `json:"boundProxy,omitempty"`
+		ID              string         `json:"id"`
+		Email           string         `json:"email"`
+		DisplayName     string         `json:"displayName,omitempty"`
+		Status          string         `json:"status"`
+		ScheduleEnabled bool           `json:"scheduleEnabled"`
+		CallCount       uint64         `json:"callCount"`
+		RateLimited     bool           `json:"rateLimited"`
+		CooldownUntil   *time.Time     `json:"cooldownUntil,omitempty"`
+		OID             string         `json:"oid,omitempty"`
+		TID             string         `json:"tid,omitempty"`
+		ExpiresAt       time.Time      `json:"expiresAt,omitempty"`
+		UpdatedAt       time.Time      `json:"updatedAt,omitempty"`
+		BoundProxy      string         `json:"boundProxy,omitempty"`
+		SSO             auth.SSOStatus `json:"sso"`
 	}
 	out := make([]view, 0, len(list))
 	for _, a := range list {
@@ -590,11 +624,12 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			callCount = s.accountPool.CallCount(a.ID)
 			rateLimited = s.accountPool.RateLimited(a.ID)
 		}
+		ssoStatus, _ := s.tokens.SSOStatus(a.ID)
 		out = append(out, view{
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
 			Status: status, ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
 			CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
-			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
+			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy, SSO: ssoStatus,
 		})
 	}
 	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot()})
@@ -933,54 +968,89 @@ func (s *Server) callbackPKCE(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) resolveAccount(accountID string) (auth.AccountToken, error) {
 	if accountID == "" {
-		acc, ok := s.tokens.Next()
-		if !ok {
-			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
-		}
-		accountID = acc.ID
-		for i := 0; !s.accountAvailable(accountID) && i < maxAccountProbe; i++ {
-			acc, ok = s.tokens.Next()
-			if !ok {
-				break
-			}
-			accountID = acc.ID
-		}
-		if !s.tokens.ScheduleEnabled(accountID) {
-			return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
-		}
-		if !s.accountPool.Available(accountID) {
-			until := s.accountPool.EarliestRecovery()
-			retry := int(time.Until(until).Seconds())
-			if retry < 5 {
-				retry = 5
-			}
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
-		}
-		if !s.accountConcurrency.Available(accountID) {
-			return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
-		}
+		return s.bestScheduledAccount("")
 	}
 	return s.tokens.EnsureValid(accountID)
 }
 
-// nextHealthyAccount returns the next round-robin account that is still
-// healthy, skipping the given id first, and validates its token. Used by the
-// failover path after a rate-limited or auth-failed attempt.
-func (s *Server) nextHealthyAccount(avoidID string) (auth.AccountToken, error) {
-	for i := 0; i < maxAccountProbe; i++ {
-		acc, ok := s.tokens.Next()
-		if !ok {
-			return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
-		}
-		if avoidID != "" && acc.ID == avoidID {
-			continue
-		}
-		if !s.accountAvailable(acc.ID) {
-			continue
-		}
-		return s.tokens.EnsureValid(acc.ID)
+// bestScheduledAccount orders eligible accounts by current concurrency,
+// recent time-to-first-delta and observed failures. Cooldown and scheduling
+// controls remain hard filters.
+func (s *Server) bestScheduledAccount(avoidID string) (auth.AccountToken, error) {
+	accounts := s.tokens.List()
+	if len(accounts) == 0 {
+		return auth.AccountToken{}, fmt.Errorf("no accounts; login first")
 	}
-	return auth.AccountToken{}, fmt.Errorf("no healthy account available for failover")
+	type scoredAccount struct {
+		account auth.AccountToken
+		score   float64
+	}
+	candidates := make([]scoredAccount, 0, len(accounts))
+	enabled := false
+	cooling := false
+	saturated := false
+	for _, candidate := range accounts {
+		if candidate.ID == "" || candidate.ID == avoidID || candidate.ScheduleDisabled {
+			continue
+		}
+		enabled = true
+		if s.accountPool != nil && !s.accountPool.Available(candidate.ID) {
+			cooling = true
+			continue
+		}
+		if !s.accountConcurrency.Available(candidate.ID) {
+			saturated = true
+			continue
+		}
+		score := float64(s.accountConcurrency.Inflight(candidate.ID)) * 2000
+		if s.accountPool != nil {
+			score = s.accountPool.Score(candidate.ID, s.accountConcurrency.Inflight(candidate.ID))
+		}
+		candidates = append(candidates, scoredAccount{account: candidate, score: score})
+	}
+	if len(candidates) > 0 {
+		sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].score < candidates[j].score })
+		var lastErr error
+		for _, candidate := range candidates {
+			validated, err := s.tokens.EnsureValid(candidate.account.ID)
+			if err == nil {
+				return validated, nil
+			}
+			lastErr = err
+			if s.accountPool != nil {
+				s.accountPool.Observe(candidate.account.ID, 0, err)
+				message := strings.ToLower(err.Error())
+				if strings.Contains(message, "token_expired") || strings.Contains(message, "invalid_grant") {
+					s.accountPool.MarkFailure(candidate.account.ID, &UpstreamHTTPError{Status: http.StatusUnauthorized, Body: "account token refresh failed"}, 0)
+				}
+			}
+		}
+		return auth.AccountToken{}, fmt.Errorf("no account has valid credentials: %w", lastErr)
+	}
+	if !enabled {
+		return auth.AccountToken{}, fmt.Errorf("no accounts enabled for scheduling")
+	}
+	if cooling {
+		until := time.Now().Add(5 * time.Second)
+		if s.accountPool != nil {
+			until = s.accountPool.EarliestRecovery()
+		}
+		retry := int(time.Until(until).Seconds())
+		if retry < 5 {
+			retry = 5
+		}
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: retry, Body: "all accounts are cooling down; try again later"}
+	}
+	if saturated {
+		return auth.AccountToken{}, &UpstreamHTTPError{Status: 429, RetryAfter: 1, Body: "all accounts are at their concurrency limit; try again shortly"}
+	}
+	return auth.AccountToken{}, fmt.Errorf("no healthy account available")
+}
+
+// nextHealthyAccount returns the best-scoring healthy account other than the
+// failed one and validates its token.
+func (s *Server) nextHealthyAccount(avoidID string) (auth.AccountToken, error) {
+	return s.bestScheduledAccount(avoidID)
 }
 
 type chatBody struct {
@@ -1036,6 +1106,222 @@ func modelTone(model string) string {
 	default:
 		return "magic"
 	}
+}
+
+type streamDeliveryState struct {
+	visible bool
+}
+
+func (s *streamDeliveryState) canRetry() bool {
+	return s == nil || !s.visible
+}
+
+func (s *streamDeliveryState) markVisible(trace *usageTrace) {
+	if s == nil || s.visible {
+		return
+	}
+	s.visible = true
+	trace.markFirstToken()
+}
+
+type openAIStreamEmitter struct {
+	r        *http.Request
+	w        http.ResponseWriter
+	flusher  http.Flusher
+	id       string
+	model    string
+	trace    *usageTrace
+	delivery *streamDeliveryState
+	mu       sync.Mutex
+	first    bool
+}
+
+func newOpenAIStreamEmitter(r *http.Request, w http.ResponseWriter, flusher http.Flusher, id, model string, trace *usageTrace, delivery *streamDeliveryState) *openAIStreamEmitter {
+	return &openAIStreamEmitter{r: r, w: w, flusher: flusher, id: id, model: model, trace: trace, delivery: delivery, first: true}
+}
+
+func openAIDeltaVisible(delta map[string]any) bool {
+	for _, key := range []string{"content", "reasoning_content", "tool_calls"} {
+		value, ok := delta[key]
+		if !ok || value == nil {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			if text != "" {
+				return true
+			}
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+const sseKeepaliveInterval = 10 * time.Second
+
+func (e *openAIStreamEmitter) writeRaw(payload string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.writeRawLocked(payload)
+}
+
+func (e *openAIStreamEmitter) writeRawLocked(payload string) error {
+	if err := e.r.Context().Err(); err != nil {
+		return err
+	}
+	rc := http.NewResponseController(e.w)
+	_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+	if _, err := fmt.Fprint(e.w, payload); err != nil {
+		return err
+	}
+	if e.flusher != nil {
+		e.flusher.Flush()
+	}
+	return nil
+}
+
+func (e *openAIStreamEmitter) startKeepalive(interval time.Duration) func() {
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := e.writeRaw(": keepalive\n\n"); err != nil {
+					return
+				}
+			case <-e.r.Context().Done():
+				return
+			case <-stop:
+				return
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+		})
+	}
+}
+
+func (e *openAIStreamEmitter) resetFirst() {
+	e.mu.Lock()
+	e.first = true
+	e.mu.Unlock()
+}
+
+func (e *openAIStreamEmitter) writeDelta(delta map[string]any) error {
+	if !openAIDeltaVisible(delta) {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.first {
+		withRole := map[string]any{"role": "assistant", "content": nil}
+		for key, value := range delta {
+			withRole[key] = value
+		}
+		delta = withRole
+	}
+	chunk := map[string]any{"id": e.id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": e.model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
+	err := e.writeRawLocked("data: " + mustJSON(chunk) + "\n\n")
+	if err == nil {
+		e.first = false
+		e.delivery.markVisible(e.trace)
+	}
+	return err
+}
+
+type visibleToolResponseWriter struct {
+	http.ResponseWriter
+	trace    *usageTrace
+	delivery *streamDeliveryState
+}
+
+func (w *visibleToolResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if n > 0 {
+		payload := string(p[:n])
+		if strings.Contains(payload, `"tool_calls"`) || strings.Contains(payload, `"reasoning_content"`) {
+			w.delivery.markVisible(w.trace)
+		}
+	}
+	return n, err
+}
+
+func (w *visibleToolResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func writeVisibleToolResponse(r *http.Request, w http.ResponseWriter, delivery *streamDeliveryState, id, model string, calls []detectedToolCall, res chathub.Result) error {
+	trace := usageTraceFrom(r.Context())
+	trace.setToolCalls(len(calls))
+	return writeToolResponse(&visibleToolResponseWriter{ResponseWriter: w, trace: trace, delivery: delivery}, id, model, true, calls, res)
+}
+
+func streamErrorCode(err error) string {
+	if chathub.IsStreamInterrupted(err) {
+		return "stream_interrupted"
+	}
+	switch upstreamStatus(err) {
+	case http.StatusTooManyRequests:
+		return "rate_limit"
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "authentication_error"
+	default:
+		return "upstream_error"
+	}
+}
+
+func writeOpenAIStreamError(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, message, code string) {
+	writeOpenAIStreamFailure(ctx, w, flusher, message, code, chathub.Result{})
+
+}
+
+func writeOpenAIStreamFailure(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, message, code string, result chathub.Result) {
+	errorBody := map[string]any{"message": message, "code": code}
+	if result.Incomplete {
+		errorBody["partial"] = true
+		errorBody["upstream_request_id"] = result.RequestID
+		errorBody["failure_stage"] = result.FailureStage
+		errorBody["last_delta_ms"] = result.LastDeltaMs
+		if result.UpstreamCloseCode != 0 {
+			errorBody["upstream_close_code"] = result.UpstreamCloseCode
+		}
+	}
+	_ = sseRaw(ctx, w, flusher, "data: "+mustJSON(map[string]any{"error": errorBody})+"\n\n")
+	_ = sseRaw(ctx, w, flusher, "data: [DONE]\n\n")
+}
+
+var errRequiredStreamToolCall = errors.New("model did not select a required tool")
+
+func planRequiredStreamToolCall(ctx context.Context, routePrompt, tone string, attachments []chathub.Attachment, tools []map[string]any, choice any, ledger agentLedger, call func(context.Context, chathub.Request) (chathub.Result, error)) ([]detectedToolCall, chathub.Result, error) {
+	result, err := call(withToolPlanning(ctx), chathub.Request{Text: routePrompt, Tone: tone, Attachments: attachments})
+	if err != nil {
+		return nil, result, err
+	}
+	calls, parsed := parseModelToolDecision(result.Text, tools, choice)
+	if !parsed {
+		repairPrompt := `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(result.Text, 6000)
+		result, err = call(withRetryAttempt(withToolPlanning(ctx)), chathub.Request{Text: repairPrompt, Tone: tone, Attachments: attachments})
+		if err != nil {
+			return nil, result, err
+		}
+		calls, parsed = parseModelToolDecision(result.Text, tools, choice)
+	}
+	calls = filterCompletedCalls(calls, ledger)
+	calls, _ = validateDetectedToolCalls(calls, tools, choice)
+	if !parsed || len(calls) == 0 {
+		return nil, result, errRequiredStreamToolCall
+	}
+	return calls, result, nil
 }
 
 func sseRaw(ctx context.Context, w http.ResponseWriter, f http.Flusher, payload string) error {
@@ -1133,9 +1419,11 @@ func (s *Server) chatOnce(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
-		writeUpstreamError(w, err)
-		return
+		if err != nil {
+			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
+			writeUpstreamError(w, err)
+			return
+		}
 	}
 	s.accountPool.MarkSuccess(acc.ID)
 	res.Text = sanitizePublicAssistantText(res.Text)
@@ -1274,11 +1562,20 @@ type oaiReq struct {
 	Attachments     []chathub.Attachment `json:"attachments,omitempty"`
 	Tools           []chathub.Tool       `json:"tools,omitempty"`
 	// Legacy OpenAI-compatible clients still send functions/function_call.
-	Functions       []json.RawMessage `json:"functions,omitempty"`
-	ToolChoice      any               `json:"tool_choice,omitempty"`
-	FunctionCall    any               `json:"function_call,omitempty"`
-	Reasoning       *reasoningConfig  `json:"reasoning,omitempty"`
-	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	Functions           []json.RawMessage `json:"functions,omitempty"`
+	ToolChoice          any               `json:"tool_choice,omitempty"`
+	FunctionCall        any               `json:"function_call,omitempty"`
+	Reasoning           *reasoningConfig  `json:"reasoning,omitempty"`
+	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	MaxTokens           int               `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
+}
+
+func (r oaiReq) outputTokenLimit() int {
+	if r.MaxCompletionTokens > 0 {
+		return r.MaxCompletionTokens
+	}
+	return r.MaxTokens
 }
 
 func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -1335,6 +1632,9 @@ func applyRequestSessionKey(body *oaiReq, r *http.Request) {
 }
 
 func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string) chathub.Request {
+	if !toolChoiceDisablesTools(body.ToolChoice) && hasCallerWorkspaceBodyTool(body.Tools) {
+		answerPrompt += "\n" + callerWorkspaceBoundaryRule
+	}
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
 	}
@@ -1356,6 +1656,18 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 	return req
 }
 
+func hasCallerWorkspaceBodyTool(tools []chathub.Tool) bool {
+	toolMaps := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		var function map[string]any
+		if json.Unmarshal(tool.Function, &function) != nil {
+			continue
+		}
+		toolMaps = append(toolMaps, map[string]any{"type": tool.Type, "function": function})
+	}
+	return hasCallerWorkspaceTool(toolMaps)
+}
+
 func mcpToolsFromRequest(tools []chathub.Tool) []mcp.Tool {
 	out := make([]mcp.Tool, 0, len(tools))
 	for _, t := range tools {
@@ -1373,6 +1685,24 @@ func mcpToolsFromRequest(tools []chathub.Tool) []mcp.Tool {
 		out = append(out, mcp.Tool{Name: f.Name, Description: f.Description, InputSchema: schema})
 	}
 	return out
+}
+
+func drainMCPToolCalls(queue *mcp.ToolCallQueue) []detectedToolCall {
+	if queue == nil {
+		return nil
+	}
+	var calls []detectedToolCall
+	for {
+		call := queue.DequeueNonBlocking()
+		if call == nil {
+			return calls
+		}
+		arguments, err := json.Marshal(call.Arguments)
+		if err != nil {
+			continue
+		}
+		calls = append(calls, detectedToolCall{ID: "call_" + uuid.NewString(), Name: call.Name, Arguments: arguments})
+	}
 }
 
 func configuredMCPServerURL(scope string) (string, error) {
@@ -1404,9 +1734,38 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		requestID = uuid.NewString()
 	}
 	startedAt := time.Now()
+	r, trace := ensureUsageTrace(r, startedAt)
+	usageWriter := &usageResponseWriter{ResponseWriter: w}
+	w = usageWriter
+	var body oaiReq
+	var prompt string
+	var acc auth.AccountToken
 	log.Printf("[req-trace] id=%s stage=http_start stream=%t", requestID, r.URL.Query().Get("stream") == "true")
 	defer func() {
 		log.Printf("[req-trace] id=%s stage=http_return total_ms=%d", requestID, time.Since(startedAt).Milliseconds())
+		metrics := trace.snapshot()
+		if metrics.Recorded || isInternalUsageAdapter(r) {
+			return
+		}
+		status := usageWriter.Status()
+		if metrics.FailureStatus > 0 {
+			status = metrics.FailureStatus
+		}
+		errorMessage := strings.TrimSpace(usageWriter.errorPreview.String())
+		if metrics.FailureMessage != "" {
+			errorMessage = metrics.FailureMessage
+		}
+		s.recordUsage(r, acc, UsageRecord{
+			Model:        firstNonEmpty(body.Model, "m365-copilot"),
+			Endpoint:     "/v1/chat/completions",
+			Stream:       body.Stream,
+			InputTokens:  EstimateTokens(prompt),
+			ToolTokens:   int64(estimateToolTokens(body.Model, body.Tools, body.ToolChoice)),
+			DurationMs:   time.Since(startedAt).Milliseconds(),
+			Status:       status,
+			ErrorType:    firstNonEmpty(metrics.FailureType, usageErrorType(status)),
+			ErrorMessage: sanitizePublicInternalText(errorMessage),
+		})
 	}()
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1418,9 +1777,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
 	}
-	var body oaiReq
 	if err := json.Unmarshal(raw, &body); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if body.MaxTokens < 0 || body.MaxCompletionTokens < 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "output token limit must be non-negative")
 		return
 	}
 	responseFormat := body.ResponseFormat
@@ -1436,7 +1798,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	normalizeRequestTools(&body)
 	body.ConversationID = firstNonEmpty(body.ConversationID, body.ConversationIDC)
 	body.SessionID = firstNonEmpty(body.SessionID, body.SessionIDC)
-	applyRequestSessionKey(&body, r)
+	transientRequest := isTransientModelRequest(r)
+	if transientRequest {
+		isolateTransientModelRequest(&body)
+	} else {
+		applyRequestSessionKey(&body, r)
+	}
 	tenantID := requestTenantID(r)
 	sessionLookupKey := tenantScopedID(tenantID, body.SessionKey)
 	userLookupKey := tenantScopedID(tenantID, body.User)
@@ -1448,6 +1815,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Tool evidence and round limits apply only to the current user turn. Older
 	// calls may legitimately be repeated in a later turn with the same arguments.
 	activeLedger := buildAgentLedger(activeMessages(body.Messages))
+	responseFormatType := ""
+	if body.ResponseFormat != nil {
+		responseFormatType = body.ResponseFormat.Type
+	}
+	log.Printf("[req-trace] id=%s stage=tool_state completed=%d pending=%d rounds=%d response_format=%q", requestID, len(activeLedger.Completed), len(activeLedger.Pending), activeLedger.ToolRounds, responseFormatType)
 	if err := activeLedger.CanContinue(maxToolRounds()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -1457,7 +1829,6 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Preserve role boundaries when adapting OpenAI messages to ChatHub's
 	// single message.text field. This keeps system/developer instructions,
 	// history, and the current user turn distinguishable.
-	var prompt string
 	prompt, body.Attachments = flattenPromptMessages(body.Messages, body.Attachments)
 	log.Printf("[req-trace] id=%s stage=prompt_flattened prompt_len=%d attachments=%d", requestID, len(prompt), len(body.Attachments))
 	fmt.Printf("[multimodal-entry] messages=%d attachments=%d prompt_len=%d\n", len(body.Messages), len(body.Attachments), len(prompt))
@@ -1491,7 +1862,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	answerPrompt := prompt
 	contextReused := false
 	resolvedConversationID := ""
-	if body.ConversationID == "" && len(body.Messages) > 0 {
+	if !transientRequest && body.ConversationID == "" && len(body.Messages) > 0 {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			resolvedConversationID = resolved.ConversationID
@@ -1511,7 +1882,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	accountID := body.AccountID
-	acc, err := s.resolveAccount(accountID)
+	acc, err = s.resolveAccount(accountID)
 	if err != nil {
 		log.Printf("[account-route] resolve failed requested=%q err=%v", accountID, err)
 		writeUpstreamError(w, err)
@@ -1534,7 +1905,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// was provided by client, session key, user session, or session resolver.
 	convReused := false
 	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
-	convCacheScope := conversationCacheScope(r, body)
+	convCacheScope := ""
+	if !transientRequest {
+		convCacheScope = conversationCacheScope(r, body)
+	}
 	if convCacheScope != "" && body.ConversationID == "" && len(body.Messages) > 1 {
 		sysHash := systemPromptHash(body.Messages)
 		if cached := s.convCache.Lookup(convCacheScope, acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
@@ -1569,6 +1943,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		body.ToolChoice = "auto"
 	}
 	var mcpServerURL string
+	var mcpCallQueue *mcp.ToolCallQueue
 	if len(toolMaps) > 0 {
 		mcpTools := mcpToolsFromRequest(body.Tools)
 		if len(mcpTools) > 0 {
@@ -1578,7 +1953,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				writeOpenAIError(w, http.StatusServiceUnavailable, "mcp_configuration_error", err.Error())
 				return
 			}
-			mcp.GlobalToolRegistry.RegisterToolsForScope(toolScope, mcpTools)
+			mcpCallQueue = mcp.NewToolCallQueue()
+			mcp.GlobalToolRegistry.RegisterProviderForScope(toolScope, mcpTools, mcp.NewMCPToolProvider(mcpTools, mcpCallQueue))
 			defer mcp.GlobalToolRegistry.ClearScope(toolScope)
 			log.Printf("[mcp] tools=%d configured_gateway=true", len(toolMaps))
 		}
@@ -1595,6 +1971,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
 	account := chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}
+	streamDelivery := &streamDeliveryState{}
+	streamRouterAttempted := false
 	// The stream is opened by the actual response path below. Do not emit a
 	// tool preamble here: a request may contain tools in its schema while still
 	// being an ordinary text question.
@@ -1603,13 +1981,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// non-streaming requests remains below until the event-level tool protocol
 	// is available end-to-end.
 	if planningMode == "router" && body.Stream && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
+		streamRouterAttempted = true
 		// Preserve the existing validated tool router for streaming tool turns.
 		// Only fall through to text streaming when the router explicitly selects
 		// no tool; this prevents a natural-language preamble from becoming a
 		// completed assistant turn with the actual call lost.
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
+		allowRoutedFinal := len(activeLedger.Completed) > 0 && len(activeLedger.Pending) == 0 && responseFormat == nil && !strings.EqualFold(normalizedToolChoiceMode(body.ToolChoice), "required")
+		routerContextSource := answerPrompt + "\n" + activeLedger.RouterContext()
+		routerContext, routerContextTruncated := boundedToolRouterPromptContext(routerContextSource)
+		log.Printf("[req-trace] id=%s stage=router_context source_len=%d bounded_len=%d truncated=%t", requestID, len(routerContextSource), len(routerContext), routerContextTruncated)
+		routePrompt := modelToolRouterPromptForTurn(routerContext, toolMaps, body.ToolChoice, allowRoutedFinal)
 		log.Printf("[req-trace] id=%s stage=router_start prompt_len=%d", requestID, len(routePrompt))
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
+		routeRes, routeErr := s.chatWithAccount(withToolPlanning(ctx), acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
 		// Router turns run in a throwaway cloud conversation that is never
 		// reused by the answer turn; delete it so the conversation list does
@@ -1618,30 +2001,87 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.dropTransientConversation(routeRes.ConversationID)
 		}
 		if routeErr != nil {
-			http.Error(w, "tool router: "+routeErr.Error(), http.StatusBadGateway)
+			writePreStreamUpstreamError(w, r, trace, routeErr)
 			return
 		}
-		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+		calls, routedAnswer, parsed := parseModelToolRouteDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
 		if !parsed {
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
+			repairRes, repairErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil && repairRes.ConversationID != "" {
 				s.dropTransientConversation(repairRes.ConversationID)
 			}
 			if repairErr == nil {
-				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+				calls, routedAnswer, parsed = parseModelToolRouteDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, activeLedger)
 				calls, _ = validateCalls("router", calls)
 			}
 		}
+		retryReason := ""
+		retryPrompt := ""
+		if shouldRetryFailedFileTool(body.Messages, toolMaps, body.ToolChoice, activeLedger, parsed, calls) {
+			retryReason = "failed_file_action"
+			retryPrompt = failedFileToolRetryPrompt(body.Messages, toolMaps, activeLedger)
+		} else if shouldRetryMissingActionTool(body.Messages, toolMaps, body.ToolChoice, parsed, calls, routedAnswer) {
+			retryReason = "missing_action"
+			retryPrompt = missingActionToolRetryPrompt(body.Messages, toolMaps)
+		}
+		if retryPrompt != "" {
+			log.Printf("[req-trace] id=%s stage=router_action_retry_start reason=%s prompt_len=%d", requestID, retryReason, len(retryPrompt))
+			retryRes, retryErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: retryPrompt, Tone: tone, Attachments: body.Attachments})
+			if retryErr == nil && retryRes.ConversationID != "" {
+				s.dropTransientConversation(retryRes.ConversationID)
+			}
+			if retryErr == nil {
+				retryCalls, _, retryParsed := parseModelToolRouteDecision(retryRes.Text, toolMaps, body.ToolChoice)
+				retryCalls = filterCompletedCalls(retryCalls, activeLedger)
+				retryCalls, _ = validateCalls("router_action_retry", retryCalls)
+				log.Printf("[req-trace] id=%s stage=router_action_retry_return reason=%s parsed=%t calls=%d", requestID, retryReason, retryParsed, len(retryCalls))
+				if retryParsed && len(retryCalls) > 0 {
+					calls = retryCalls
+					routedAnswer = ""
+					parsed = true
+					routeRes = retryRes
+				}
+			}
+			if len(calls) == 0 {
+				message := "model did not select a caller tool for the requested local operation"
+				if retryReason == "failed_file_action" {
+					message = "model did not select a different caller file tool after the previous file operation failed"
+				}
+				writeOpenAIError(w, http.StatusBadGateway, "tool_selection_failed", message)
+				return
+			}
+		}
+		log.Printf("[req-trace] id=%s stage=router_decision parsed=%t calls=%d final=%t", requestID, parsed, len(calls), routedAnswer != "")
 		if parsed && len(calls) > 0 {
 			scope := fmt.Sprintf("%d:%v:stream", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), true, calls, routeRes)
+			_ = writeVisibleToolResponse(r, w, streamDelivery, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), calls, routeRes)
+			return
+		}
+		if parsed && allowRoutedFinal && routedAnswer != "" {
+			if shouldEnforceCompletionEvidence(toolMaps, activeLedger) && !completionEvidenceAllows(routedAnswer, activeLedger) {
+				routedAnswer = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
+			}
+			if isContentPolicyBlock(routedAnswer) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					http.Error(w, "stream unsupported", http.StatusInternalServerError)
+					return
+				}
+				writeOpenAIStreamError(r.Context(), w, flusher, "M365 content policy blocked this request; try again or switch account", "upstream_content_blocked")
+				return
+			}
+			s.accountPool.MarkSuccess(acc.ID)
+			s.writeRoutedFinalAnswer(w, r, body, prompt, routedAnswer, routeRes, acc, startedAt)
 			return
 		}
 	}
@@ -1659,50 +2099,83 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "stream unsupported", http.StatusInternalServerError)
 			return
 		}
-		if err := sseRaw(r.Context(), w, flusher, ": connected\n\n"); err != nil {
-			return
-		}
 		var text strings.Builder
+		var delivered strings.Builder
+		var deliveredReasoning strings.Builder
 		var pending strings.Builder
 		var streamedTools []detectedToolCall
-		first := true
 		identityFilter := newPublicIdentityStreamFilter(model)
+		reasoningFilter := newPublicReasoningStreamFilter()
+		outputLimiter := newOutputTokenLimiter(model, body.outputTokenLimit())
+		emitter := newOpenAIStreamEmitter(r, w, flusher, id, model, trace, streamDelivery)
+		if err := emitter.writeRaw(": connected\n\n"); err != nil {
+			return
+		}
+		stopKeepalive := emitter.startKeepalive(sseKeepaliveInterval)
+		defer stopKeepalive()
+		requiredTool := strings.EqualFold(strings.TrimSpace(normalizedToolChoiceMode(body.ToolChoice)), "required")
+		hadToolEvent := false
+		invalidToolEvent := false
+		writeText := func(part string) error {
+			part = outputLimiter.Apply(part)
+			if part == "" {
+				return nil
+			}
+			if err := emitter.writeDelta(map[string]any{"content": part}); err != nil {
+				return err
+			}
+			delivered.WriteString(part)
+			return nil
+		}
+		writeReasoning := func(part string) error {
+			part = outputLimiter.Apply(part)
+			if part == "" {
+				return nil
+			}
+			if err := emitter.writeDelta(map[string]any{"reasoning_content": part}); err != nil {
+				return err
+			}
+			deliveredReasoning.WriteString(part)
+			return nil
+		}
 		emitText := func(part string) error {
 			if part == "" {
 				return nil
 			}
 			part = identityFilter.Push(part)
-			if part == "" {
-				return nil
-			}
-			if err := r.Context().Err(); err != nil {
-				return err
-			}
-			delta := map[string]any{"content": part}
-			if first {
-				delta["role"] = "assistant"
-				first = false
-			}
-			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": nil}}}
-			rc := http.NewResponseController(w)
-			_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
-				return err
-			}
-			flusher.Flush()
-			return nil
+			return writeText(part)
 		}
-		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, func(ev chathub.StreamEvent) error {
-			if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
-				streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
+		emitReasoning := func(part string) error {
+			if part = reasoningFilter.Push(part); part == "" {
 				return nil
 			}
-			if ev.Kind != "text" || ev.Text == "" {
+			return writeReasoning(part)
+		}
+		handleEvent := func(ev chathub.StreamEvent) error {
+			switch ev.Kind {
+			case "tool":
+				hadToolEvent = true
+				if ev.ToolName != "" && len(ev.Arguments) > 0 {
+					streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
+				} else {
+					invalidToolEvent = true
+				}
+				return nil
+			case "reasoning":
+				return emitReasoning(ev.Text)
+			case "text":
+				if ev.Text == "" {
+					return nil
+				}
+			default:
 				return nil
 			}
 			text.WriteString(ev.Text)
 			pending.WriteString(ev.Text)
 			v := pending.String()
+			if requiredTool {
+				return nil
+			}
 			// If the text contains a bash block or a JSON command, don't emit it as text
 			// It will be caught by fencedToolCalls after the stream completes
 			if strings.Contains(v, "```bash") || strings.Contains(v, "\"command\"") {
@@ -1733,8 +2206,19 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				pending.WriteString(v[cut:])
 			}
 			return nil
-		})
-		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
+		}
+		resetAttempt := func() {
+			text.Reset()
+			pending.Reset()
+			streamedTools = nil
+			hadToolEvent = false
+			invalidToolEvent = false
+			identityFilter = newPublicIdentityStreamFilter(model)
+			reasoningFilter = newPublicReasoningStreamFilter()
+			emitter.resetFirst()
+		}
+		res, err := s.chatWithAccountEvents(ctx, acc.ID, account, answerReq, handleEvent)
+		if err != nil && streamDelivery.canRetry() && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
 			// A throttled stream may retry on the next healthy account: only the
 			// ": connected" preamble reached the client, so the retried stream is
 			// indistinguishable from a fresh request.
@@ -1747,48 +2231,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
+				resetAttempt()
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
-				res2, err2 := s.chatWithAccountEvents(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, func(ev chathub.StreamEvent) error {
-					if ev.Kind == "tool" && ev.ToolName != "" && len(ev.Arguments) > 0 {
-						streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
-						return nil
-					}
-					if ev.Kind != "text" || ev.Text == "" {
-						return nil
-					}
-					text.WriteString(ev.Text)
-					pending.WriteString(ev.Text)
-					v := pending.String()
-					if strings.Contains(v, "```bash") || strings.Contains(v, "\"command\"") {
-						return nil
-					}
-					if i := strings.Index(v, "```"); i >= 0 {
-						if err := emitText(v[:i]); err != nil {
-							return err
-						}
-						pending.Reset()
-						pending.WriteString(v[i:])
-						return nil
-					}
-					if runeCount := utf8.RuneCountInString(v); runeCount > 8 {
-						cut := 0
-						seen := 0
-						for i := range v {
-							if seen == runeCount-8 {
-								cut = i
-								break
-							}
-							seen++
-						}
-						if err := emitText(v[:cut]); err != nil {
-							return err
-						}
-						pending.Reset()
-						pending.WriteString(v[cut:])
-					}
-					return nil
-				})
+				res2, err2 := s.chatWithAccountEvents(withRetryAttempt(ctx2), next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, handleEvent)
 				if err2 == nil {
 					res = res2
 					acc = next
@@ -1799,8 +2245,54 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		if err != nil && chathub.IsStreamInterrupted(err) && delivered.Len() > 0 && !requiredTool && !hadToolEvent {
+			resumeAttempts := s.settings.get().StreamResumeAttempts
+			partialResult := res
+			for attempt := 1; attempt <= resumeAttempts && r.Context().Err() == nil; attempt++ {
+				resumePrompt := streamResumePrompt(answerPrompt, delivered.String())
+				log.Printf("[req-trace] id=%s stage=stream_resume_start attempt=%d upstream_request_id=%s partial_chars=%d failure_stage=%s close_code=%d", requestID, attempt, partialResult.RequestID, utf8.RuneCountInString(delivered.String()), partialResult.FailureStage, partialResult.UpstreamCloseCode)
+				resumeCtx, resumeCancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
+				resumeRes, resumeErr := s.chatWithAccount(withRetryAttempt(resumeCtx), acc.ID, account, chathub.Request{Text: resumePrompt, Tone: tone})
+				resumeCancel()
+				if resumeErr != nil {
+					log.Printf("[req-trace] id=%s stage=stream_resume_error attempt=%d err=%v", requestID, attempt, resumeErr)
+					err = resumeErr
+					continue
+				}
+				continuation, overlap := trimStreamResumeOverlap(delivered.String(), sanitizePublicAssistantTextForModel(resumeRes.Text, body.Model))
+				identityFilter = newPublicIdentityStreamFilter(model)
+				reasoningFilter = newPublicReasoningStreamFilter()
+				pending.Reset()
+				if writeErr := emitText(continuation); writeErr != nil {
+					log.Printf("[req-trace] id=%s stage=stream_resume_write attempt=%d err=%v", requestID, attempt, writeErr)
+					return
+				}
+				if content := identityFilter.Flush(); content != "" {
+					if writeErr := writeText(content); writeErr != nil {
+						log.Printf("[req-trace] id=%s stage=stream_resume_write attempt=%d err=%v", requestID, attempt, writeErr)
+						return
+					}
+				}
+				text.Reset()
+				text.WriteString(delivered.String())
+				resumeRes.Text = delivered.String()
+				resumeRes.Incomplete = false
+				resumeRes.FailureStage = ""
+				resumeRes.UpstreamCloseCode = 0
+				resumeRes = detachStreamResumeConversation(resumeRes, s.dropTransientConversation)
+				res = resumeRes
+				err = nil
+				trace.markStreamRecovered(resumeRes.RequestID, resumeRes.LastDeltaMs)
+				log.Printf("[req-trace] id=%s stage=stream_resume_success attempt=%d upstream_request_id=%s overlap_runes=%d continuation_chars=%d", requestID, attempt, resumeRes.RequestID, overlap, utf8.RuneCountInString(continuation))
+				break
+			}
+			if err != nil {
+				res = partialResult
+				trace.markStreamPartial(partialResult)
+			}
+		}
 		if err != nil {
-			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
+			log.Printf("[req-trace] id=%s stage=stream_error upstream_request_id=%s failure_stage=%s close_code=%d partial=%t last_delta_ms=%d err=%v", requestID, res.RequestID, res.FailureStage, res.UpstreamCloseCode, res.Incomplete, res.LastDeltaMs, err)
 			s.accountPool.MarkFailure(acc.ID, err, rateLimitCooldown)
 			if convReused {
 				s.invalidateConvCache(convCacheScope, acc.ID, convCacheModel)
@@ -1810,8 +2302,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				msg = "upstream is rate limiting; try again shortly"
 			}
 			msg = sanitizePublicInternalText(msg)
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
-			_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+			failureType := usageErrorType(upstreamStatus(err))
+			if res.Incomplete {
+				failureType = "stream_interrupted"
+			}
+			trace.fail(upstreamStatus(err), failureType, msg)
+			code := streamErrorCode(err)
+			if res.Incomplete {
+				code = "stream_interrupted"
+			}
+			stopKeepalive()
+			writeOpenAIStreamFailure(r.Context(), w, flusher, msg, code, res)
 			return
 		}
 		s.accountPool.MarkSuccess(acc.ID)
@@ -1819,20 +2320,26 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			text.WriteString(res.Text)
 			pending.WriteString(res.Text)
 		}
-		rawCalls := streamedTools
+		rawCalls := drainMCPToolCalls(mcpCallQueue)
+		if len(rawCalls) == 0 {
+			rawCalls = streamedTools
+		}
 		if len(rawCalls) == 0 {
 			rawCalls = fencedToolCalls(text.String(), toolMaps, body.ToolChoice)
 		}
 		calls, rejected := validateCalls("stream", rawCalls)
 		calls = filterCompletedCalls(calls, activeLedger)
 		toolResult := chathub.Result{Text: text.String()}
-		if len(calls) == 0 && rejected > 0 {
+		recoveryAttempted := false
+		var recoveryErr error
+		if len(calls) == 0 && (rejected > 0 || invalidToolEvent) {
+			recoveryAttempted = true
 			// A native ChatHub event can contain a fabricated or empty tool name.
 			// Do not leak it to the local runner: ask the model to remap the intent
 			// to exactly one of the tools the client actually declared.
 			repairPrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, "required") +
 				"\nREPAIR RULE: The previous upstream event selected an undeclared tool. Select one declared tool that performs the intended operation. Never return unknown_tool."
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
+			repairRes, repairErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: repairPrompt, Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil {
 				repaired, parsed := parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				if parsed {
@@ -1842,12 +2349,49 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			recoveryErr = repairErr
 			if len(calls) == 0 {
 				log.Printf("[tool-validation] id=%s stage=stream-repair failed", requestID)
-				_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream selected an undeclared tool and repair failed", "code": "invalid_tool_call"}})+"\n\n")
-				_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
-				return
 			}
+		}
+		if len(calls) == 0 && requiredTool && !recoveryAttempted && !hadToolEvent && !streamRouterAttempted {
+			recoveryAttempted = true
+			routePrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, "required")
+			planner := func(planCtx context.Context, request chathub.Request) (chathub.Result, error) {
+				planned, planErr := s.chatWithAccount(planCtx, acc.ID, account, request)
+				if planErr == nil && planned.ConversationID != "" {
+					s.dropTransientConversation(planned.ConversationID)
+				}
+				return planned, planErr
+			}
+			plannedCalls, plannedResult, planErr := planRequiredStreamToolCall(ctx, routePrompt, tone, body.Attachments, toolMaps, body.ToolChoice, activeLedger, planner)
+			if planErr == nil {
+				calls = plannedCalls
+				toolResult = plannedResult
+			} else {
+				recoveryErr = planErr
+			}
+		}
+		if len(calls) == 0 && requiredTool {
+			status := http.StatusBadGateway
+			code := "tool_protocol_error"
+			message := "model did not select a required tool after one constrained routing attempt"
+			if recoveryErr != nil && !errors.Is(recoveryErr, errRequiredStreamToolCall) {
+				status = upstreamStatus(recoveryErr)
+				code = streamErrorCode(recoveryErr)
+				message = sanitizePublicInternalText(upstreamError(recoveryErr))
+			}
+			trace.fail(status, code, message)
+			stopKeepalive()
+			writeOpenAIStreamError(r.Context(), w, flusher, message, code)
+			return
+		}
+		if len(calls) == 0 && recoveryAttempted {
+			message := "upstream selected an undeclared tool and repair failed"
+			trace.fail(http.StatusBadGateway, "invalid_tool_call", message)
+			stopKeepalive()
+			writeOpenAIStreamError(r.Context(), w, flusher, message, "invalid_tool_call")
+			return
 		}
 		if len(calls) > 0 {
 			log.Printf("[req-trace] id=%s stage=tool_calls_detected count=%d names=%v", requestID, len(calls), func() []string {
@@ -1858,7 +2402,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return n
 			}())
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			_ = writeToolResponse(w, id, model, true, calls, toolResult)
+			stopKeepalive()
+			_ = writeVisibleToolResponse(r, w, streamDelivery, id, model, calls, toolResult)
 			if userLookupKey != "" && res.ConversationID != "" {
 				s.userSessions.Put(userLookupKey, res.ConversationID, res.SessionID, acc.ID)
 			}
@@ -1870,9 +2415,28 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 			return
 		}
-		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
-		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finishChunk)+"\n\n")
-		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+		if content := identityFilter.Flush(); content != "" {
+			if err := writeText(content); err != nil {
+				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+				return
+			}
+		}
+		if reasoning := reasoningFilter.Flush(); reasoning != "" {
+			if err := writeReasoning(reasoning); err != nil {
+				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
+				return
+			}
+		}
+		finishReason := "stop"
+		if outputLimiter.Truncated() {
+			finishReason = "length"
+			res.Text = delivered.String()
+			res.Reasoning = deliveredReasoning.String()
+		}
+		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}}
+		stopKeepalive()
+		_ = emitter.writeRaw("data: " + mustJSON(finishChunk) + "\n\n")
+		_ = emitter.writeRaw("data: [DONE]\n\n")
 		if userLookupKey != "" && res.ConversationID != "" {
 			s.userSessions.Put(userLookupKey, res.ConversationID, res.SessionID, acc.ID)
 		}
@@ -1883,8 +2447,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
 	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
+		allowRoutedFinal := len(activeLedger.Completed) > 0 && len(activeLedger.Pending) == 0 && responseFormat == nil && !strings.EqualFold(normalizedToolChoiceMode(body.ToolChoice), "required")
+		routerContextSource := answerPrompt + "\n" + activeLedger.RouterContext()
+		routerContext, routerContextTruncated := boundedToolRouterPromptContext(routerContextSource)
+		log.Printf("[req-trace] id=%s stage=router_context source_len=%d bounded_len=%d truncated=%t", requestID, len(routerContextSource), len(routerContext), routerContextTruncated)
+		routePrompt := modelToolRouterPromptForTurn(routerContext, toolMaps, body.ToolChoice, allowRoutedFinal)
+		routeRes, routeErr := s.chatWithAccount(withToolPlanning(ctx), acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		if routeErr != nil {
 			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown)
 			if IsRateLimited(routeErr) || IsAuthFailure(routeErr) {
@@ -1892,7 +2460,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				if nerr == nil {
 					ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 					defer cancel2()
-					if res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments}); err2 == nil {
+					if res2, err2 := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx2)), next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments}); err2 == nil {
 						routeRes, routeErr = res2, nil
 						acc = next
 						account = chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}
@@ -1911,12 +2479,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			s.accountPool.MarkSuccess(acc.ID)
 		}
-		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+		if routeRes.ConversationID != "" {
+			s.dropTransientConversation(routeRes.ConversationID)
+		}
+		calls, routedAnswer, parsed := parseModelToolRouteDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		if !parsed {
-			repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
+			repairRes, repairErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
 ` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil {
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+				if repairRes.ConversationID != "" {
+					s.dropTransientConversation(repairRes.ConversationID)
+				}
 			}
 			if !parsed {
 				http.Error(w, "model returned an invalid tool routing decision", http.StatusBadGateway)
@@ -1925,13 +2499,62 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
+		retryReason := ""
+		retryPrompt := ""
+		if shouldRetryFailedFileTool(body.Messages, toolMaps, body.ToolChoice, activeLedger, parsed, calls) {
+			retryReason = "failed_file_action"
+			retryPrompt = failedFileToolRetryPrompt(body.Messages, toolMaps, activeLedger)
+		} else if shouldRetryMissingActionTool(body.Messages, toolMaps, body.ToolChoice, parsed, calls, routedAnswer) {
+			retryReason = "missing_action"
+			retryPrompt = missingActionToolRetryPrompt(body.Messages, toolMaps)
+		}
+		if retryPrompt != "" {
+			log.Printf("[req-trace] id=%s stage=router_action_retry_start reason=%s prompt_len=%d", requestID, retryReason, len(retryPrompt))
+			retryRes, retryErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: retryPrompt, Tone: tone, Attachments: body.Attachments})
+			if retryErr == nil && retryRes.ConversationID != "" {
+				s.dropTransientConversation(retryRes.ConversationID)
+			}
+			if retryErr == nil {
+				retryCalls, _, retryParsed := parseModelToolRouteDecision(retryRes.Text, toolMaps, body.ToolChoice)
+				retryCalls = filterCompletedCalls(retryCalls, activeLedger)
+				retryCalls, _ = validateCalls("router_action_retry", retryCalls)
+				log.Printf("[req-trace] id=%s stage=router_action_retry_return reason=%s parsed=%t calls=%d", requestID, retryReason, retryParsed, len(retryCalls))
+				if retryParsed && len(retryCalls) > 0 {
+					calls = retryCalls
+					routedAnswer = ""
+					parsed = true
+					routeRes = retryRes
+				}
+			}
+			if len(calls) == 0 {
+				message := "model did not select a caller tool for the requested local operation"
+				if retryReason == "failed_file_action" {
+					message = "model did not select a different caller file tool after the previous file operation failed"
+				}
+				writeOpenAIError(w, http.StatusBadGateway, "tool_selection_failed", message)
+				return
+			}
+		}
+		log.Printf("[req-trace] id=%s stage=router_decision parsed=%t calls=%d final=%t", requestID, parsed, len(calls), routedAnswer != "")
 		if len(calls) > 0 {
 			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, routeRes)
+			_ = writeToolResponseTracked(r, w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, routeRes)
+			return
+		}
+		if parsed && allowRoutedFinal && routedAnswer != "" {
+			if shouldEnforceCompletionEvidence(toolMaps, activeLedger) && !completionEvidenceAllows(routedAnswer, activeLedger) {
+				routedAnswer = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
+			}
+			if isContentPolicyBlock(routedAnswer) {
+				writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
+				return
+			}
+			s.accountPool.MarkSuccess(acc.ID)
+			s.writeRoutedFinalAnswer(w, r, body, prompt, routedAnswer, routeRes, acc, startedAt)
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
@@ -1939,7 +2562,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			retryText := `Select at least one required next tool call from FUNCTION_DEFINITIONS. Validate every argument against its schema. Return JSON only as {"calls":[{"name":"function_name","arguments":{}}]}.
 APPLICATION_REQUEST_AND_EVIDENCE:
 ` + prompt + "\n" + activeLedger.RouterContext() + "\nFUNCTION_DEFINITIONS:\n" + string(defs)
-			retryRes, retryErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments})
+			retryRes, retryErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: retryText, Tone: tone, Attachments: body.Attachments})
 			if retryErr == nil {
 				calls, parsed = parseModelToolDecision(retryRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, activeLedger)
@@ -1950,7 +2573,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 					}
 					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-					_ = writeToolResponse(w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, retryRes)
+					_ = writeToolResponseTracked(r, w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, retryRes)
 					return
 				}
 			}
@@ -1973,49 +2596,54 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		id := "chatcmpl-" + uuid.NewString()
 		model := firstNonEmpty(body.Model, "m365-copilot")
-		firstDelta := true
-		writeChunk := func(delta map[string]any) error {
-			if err := r.Context().Err(); err != nil {
-				return err
-			}
-			// The first SSE chunk must carry the assistant role; subsequent
-			// chunks carry content or reasoning deltas.
-			if firstDelta {
-				firstDelta = false
-				withRole := map[string]any{"role": "assistant", "content": nil}
-				for k, v := range delta {
-					withRole[k] = v
-				}
-				delta = withRole
-			}
-			chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": delta}}}
-			rc := http.NewResponseController(w)
-			_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", mustJSON(chunk)); err != nil {
-				return err
-			}
-			flusher.Flush()
-			return nil
+		emitter := newOpenAIStreamEmitter(r, w, flusher, id, model, trace, streamDelivery)
+		if err := emitter.writeRaw(": connected\n\n"); err != nil {
+			return
 		}
+		stopKeepalive := emitter.startKeepalive(sseKeepaliveInterval)
+		defer stopKeepalive()
+		writeChunk := emitter.writeDelta
 		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
 		reasoningFilter := newPublicReasoningStreamFilter()
+		outputLimiter := newOutputTokenLimiter(model, body.outputTokenLimit())
+		var deliveredContent strings.Builder
+		var deliveredReasoning strings.Builder
+		writeContent := func(content string) error {
+			content = outputLimiter.Apply(content)
+			if content == "" {
+				return nil
+			}
+			if err := writeChunk(map[string]any{"content": content}); err != nil {
+				return err
+			}
+			deliveredContent.WriteString(content)
+			return nil
+		}
+		writeReasoning := func(reasoning string) error {
+			reasoning = outputLimiter.Apply(reasoning)
+			if reasoning == "" {
+				return nil
+			}
+			if err := writeChunk(map[string]any{"reasoning_content": reasoning}); err != nil {
+				return err
+			}
+			deliveredReasoning.WriteString(reasoning)
+			return nil
+		}
 		onDelta := func(content string) error {
 			if content = contentFilter.Push(content); content != "" {
-				return writeChunk(map[string]any{"content": content})
+				return writeContent(content)
 			}
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
 			if reasoning = reasoningFilter.Push(reasoning); reasoning != "" {
-				return writeChunk(map[string]any{"reasoning_content": reasoning})
+				return writeReasoning(reasoning)
 			}
 			return nil
 		}
-		if err := sseRaw(r.Context(), w, flusher, ": connected\n\n"); err != nil {
-			return
-		}
 		res, err = s.chatWithAccountReasoning(ctx, acc.ID, account, answerReq, onDelta, onReasoning)
-		if err != nil && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
+		if err != nil && streamDelivery.canRetry() && body.AccountID == "" && (body.ConversationID == "" || body.ConversationID == resolvedConversationID) && (IsRateLimited(err) || IsAuthFailure(err)) {
 			// Retry a throttled stream on the next healthy account; the client
 			// has only seen the ": connected" preamble so far, so the retry is
 			// indistinguishable from a fresh request.
@@ -2026,9 +2654,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					failoverReq.ConversationID = ""
 					failoverReq.SessionID = ""
 				}
+				contentFilter = newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
+				reasoningFilter = newPublicReasoningStreamFilter()
+				outputLimiter = newOutputTokenLimiter(model, body.outputTokenLimit())
+				deliveredContent.Reset()
+				deliveredReasoning.Reset()
+				emitter.resetFirst()
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
-				if res2, err2 := s.chatWithAccountReasoning(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
+				if res2, err2 := s.chatWithAccountReasoning(withRetryAttempt(ctx2), next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq, onDelta, onReasoning); err2 == nil {
 					res = res2
 					acc = next
 					err = nil
@@ -2040,17 +2674,21 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		if err == nil {
 			if content := contentFilter.Flush(); content != "" {
-				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+				if writeErr := writeContent(content); writeErr != nil {
 					return
 				}
 			}
 			if reasoning := reasoningFilter.Flush(); reasoning != "" {
-				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+				if writeErr := writeReasoning(reasoning); writeErr != nil {
 					return
 				}
 			}
 			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+			if outputLimiter.Truncated() {
+				res.Text = deliveredContent.String()
+				res.Reasoning = deliveredReasoning.String()
+			}
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
@@ -2063,28 +2701,37 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				msg = "upstream is rate limiting; try again shortly"
 			}
 			msg = sanitizePublicInternalText(msg)
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": msg, "code": "rate_limit"}})+"\n\n")
+			trace.fail(upstreamStatus(err), usageErrorType(upstreamStatus(err)), msg)
+			stopKeepalive()
+			writeOpenAIStreamError(r.Context(), w, flusher, msg, streamErrorCode(err))
+			return
 		}
-		pt := EstimateTokens(prompt)
+		pt := estimatedChatPromptTokens(prompt, &body)
 		ct := EstimateTokens(res.Text)
+		if body.outputTokenLimit() > 0 {
+			ct = int64(outputLimiter.Tokens())
+		}
 		log.Printf("[usage] stream id=%s pt=%d ct=%d res.Text=%d", id, pt, ct, len(res.Text))
-		if err == nil && ct == 0 {
-			_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(map[string]any{"error": map[string]any{"message": "upstream returned empty completion; the requested model may be unavailable for this tenant", "code": "upstream_error"}})+"\n\n")
+		if ct == 0 {
+			stopKeepalive()
+			writeOpenAIStreamError(r.Context(), w, flusher, "upstream returned empty completion; the requested model may be unavailable for this tenant", "upstream_error")
+			return
 		}
-		finish := "stop"
-		if err != nil {
-			finish = "stop"
+		finishReason := "stop"
+		if outputLimiter.Truncated() {
+			finishReason = "length"
 		}
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
-		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
-		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		stopKeepalive()
+		_ = emitter.writeRaw("data: " + mustJSON(usageChunk) + "\n\n")
+		_ = emitter.writeRaw("data: [DONE]\n\n")
 	} else {
 		res, err = s.chatWithAccount(ctx, acc.ID, account, answerReq)
 		if IsEmptyCompletion(err) && tone != "magic" {
 			log.Printf("[tone-fallback] tone=%q returned empty, retrying with magic", tone)
 			magicReq := answerReq
 			magicReq.Tone = "magic"
-			if res2, err2 := s.chatWithAccount(ctx, acc.ID, account, magicReq); err2 == nil && res2.Text != "" {
+			if res2, err2 := s.chatWithAccount(withRetryAttempt(ctx), acc.ID, account, magicReq); err2 == nil && res2.Text != "" {
 				res = res2
 				err = nil
 			}
@@ -2101,7 +2748,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				}
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
-				res2, err2 := s.chatWithAccount(ctx2, next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
+				res2, err2 := s.chatWithAccount(withRetryAttempt(ctx2), next.ID, chathub.Account{AccessToken: next.AccessToken, OID: next.OID, TID: next.TID}, failoverReq)
 				if err2 == nil {
 					res = res2
 					acc = next
@@ -2143,7 +2790,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		s.bindConversation(acc, &body, r, res, prompt, answerPrompt, contextReused, startedAt)
 		s.storeConvCache(convCacheScope, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 	}
-	if res.ConversationID != "" {
+	if !transientRequest && res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			w.Header().Set(sessionHeaderName, resolved.SessionID)
@@ -2157,7 +2804,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if len(toolMaps) > 0 && isToolRefusal(res.Text) {
 		log.Printf("[tool-eject] model refused tools, retrying with correction")
 		correction := "Your previous response incorrectly denied that caller tools are available. They are real, active, and callable on the caller's Windows machine. Call the appropriate tool now. Do not explain tool availability.\n\nUser request:\n" + prompt
-		res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
+		res2, err2 := s.chatWithAccount(withRetryAttempt(ctx), acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
 		if err2 == nil && !isToolRefusal(res2.Text) {
 			res = res2
 		}
@@ -2165,19 +2812,29 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	if len(toolMaps) > 0 && isSandboxHallucination(res.Text) {
 		log.Printf("[sandbox-eject] model used code interpreter/sandbox, retrying with explicit tool instruction")
 		correction := "CRITICAL: You must NOT use any built-in code interpreter, Python sandbox, or cloud execution environment. The caller has provided a bash tool that runs Windows PowerShell 5.1 on their local machine — use it to execute any commands or code. Do NOT say you cannot run code. Do NOT say you only have a Linux container. Do NOT say you have no Windows execution channel. You DO have a bash tool that runs on Windows. Call the bash tool NOW with the appropriate PowerShell command.\n\nUser request:\n" + prompt
-		res2, err2 := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
+		res2, err2 := s.chatWithAccount(withRetryAttempt(ctx), acc.ID, account, chathub.Request{Text: correction, Tone: tone, Attachments: body.Attachments})
 		if err2 == nil && !isSandboxHallucination(res2.Text) {
 			res = res2
 		}
 	}
 	invalidDetectedTool := false
+	if rawCalls := drainMCPToolCalls(mcpCallQueue); len(rawCalls) > 0 {
+		calls, rejected := validateCalls("mcp", rawCalls)
+		calls = filterCompletedCalls(calls, activeLedger)
+		invalidDetectedTool = rejected > 0
+		if len(calls) > 0 {
+			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
+			return
+		}
+	}
 	if rawCalls := fencedToolCalls(res.Text, toolMaps, body.ToolChoice); len(rawCalls) > 0 {
 		calls, rejected := validateCalls("fenced", rawCalls)
 		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = rejected > 0
 		if len(calls) > 0 {
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			_ = writeToolResponse(w, id, model, body.Stream, calls, res)
+			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
 	}
@@ -2187,7 +2844,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		invalidDetectedTool = invalidDetectedTool || rejected > 0
 		if len(calls) > 0 {
 			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-			_ = writeToolResponse(w, id, model, body.Stream, calls, res)
+			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
 	}
@@ -2195,11 +2852,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// structured event that failed the declared-name/schema boundary.
 	if (planningMode == "native" || invalidDetectedTool) && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
 		routePrompt := modelToolRouterPrompt(prompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
-		routeRes, routeErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
+		routeRes, routeErr := s.chatWithAccount(withToolPlanning(ctx), acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		if routeErr == nil {
 			calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
 			if !parsed {
-				repairRes, repairErr := s.chatWithAccount(ctx, acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
+				repairRes, repairErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Use {"calls":[]} if no tool is needed. OUTPUT:\n` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
 				if repairErr == nil {
 					calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				}
@@ -2212,7 +2869,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 				}
 				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
-				_ = writeToolResponse(w, id, model, body.Stream, calls, routeRes)
+				_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, routeRes)
 				return
 			}
 		}
@@ -2227,6 +2884,16 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+	if responseFormat != nil && (responseFormat.Type == "json_object" || responseFormat.Type == "json_schema") {
+		res.Text = normalizeJSONText(res.Text)
+	}
+	limitedReasoning, limitedText, outputTruncated, limitedTokenCount := limitAssistantText(model, res.Reasoning, res.Text, body.outputTokenLimit())
+	res.Reasoning = limitedReasoning
+	res.Text = limitedText
+	finishReason := "stop"
+	if outputTruncated {
+		finishReason = "length"
+	}
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
 	created := time.Now().Unix()
 
@@ -2252,17 +2919,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		b, _ := json.Marshal(chunk)
 		_ = sseRaw(r.Context(), w, flusher, "data: "+string(b)+"\n\n")
-		pt := EstimateTokens(prompt)
+		pt := estimatedChatPromptTokens(prompt, &body)
 		ct := EstimateTokens(res.Text)
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		if body.outputTokenLimit() > 0 {
+			ct = int64(limitedTokenCount)
+		}
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		return
 	}
 
-	if responseFormat != nil && (responseFormat.Type == "json_object" || responseFormat.Type == "json_schema") {
-		res.Text = normalizeJSONText(res.Text)
-	}
 	content := any(res.Text)
 	if len(res.Images) > 0 {
 		parts := []any{map[string]any{"type": "text", "text": res.Text}}
@@ -2281,8 +2948,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	// 上游 ChatHub 不返回 token 计数，按请求/回复文本本地估算填充
 	// OpenAI 要求的 usage 字段。
-	pt := EstimateTokens(prompt)
+	pt := estimatedChatPromptTokens(prompt, &body)
 	ct := EstimateTokens(res.Text)
+	if body.outputTokenLimit() > 0 {
+		ct = int64(limitedTokenCount)
+	}
 	jsonOut(w, map[string]any{
 		"id":      id,
 		"object":  "chat.completion",
@@ -2291,7 +2961,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		"choices": []map[string]any{{
 			"index":         0,
 			"message":       assistant,
-			"finish_reason": "stop",
+			"finish_reason": finishReason,
 		}},
 		"m365": compatM365Metadata(res),
 		"usage": map[string]any{
@@ -2302,20 +2972,95 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	})
 }
 
-func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.Request, body *oaiReq, prompt, answer string, startedAt time.Time) {
-	model := firstNonEmpty(body.Model, defaultPublicModelName)
+func (s *Server) writeRoutedFinalAnswer(w http.ResponseWriter, r *http.Request, body oaiReq, prompt, answer string, res chathub.Result, acc auth.AccountToken, startedAt time.Time) {
+	answer = sanitizePublicAssistantTextForModel(answer, body.Model)
+	model := firstNonEmpty(body.Model, "m365-copilot")
+	_, answer, truncated, _ := limitAssistantText(model, "", answer, body.outputTokenLimit())
+	finishReason := "stop"
+	if truncated {
+		finishReason = "length"
+	}
 	id := "chatcmpl-" + uuid.NewString()
 	created := time.Now().Unix()
 	inputTokens := EstimateTokens(prompt)
+	toolTokens := int64(estimateToolTokens(body.Model, body.Tools, body.ToolChoice))
 	outputTokens := EstimateTokens(answer)
-	usage := map[string]any{"prompt_tokens": inputTokens, "completion_tokens": outputTokens, "total_tokens": inputTokens + outputTokens}
-	if s.usage != nil {
-		s.usage.record(UsageRecord{
+	promptTokens := inputTokens + toolTokens
+	usage := map[string]any{"prompt_tokens": promptTokens, "completion_tokens": outputTokens, "total_tokens": promptTokens + outputTokens}
+	recordUsage := func() {
+		s.recordUsage(r, acc, UsageRecord{
 			Time:         time.Now(),
-			APIKeyPrefix: extractAPIKey(r),
 			Model:        model,
 			Endpoint:     "/v1/chat/completions",
+			Stream:       body.Stream,
 			InputTokens:  inputTokens,
+			ToolTokens:   toolTokens,
+			OutputTokens: outputTokens,
+			DurationMs:   time.Since(startedAt).Milliseconds(),
+			Status:       http.StatusOK,
+		})
+	}
+	if body.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "stream unsupported", http.StatusInternalServerError)
+			return
+		}
+		delivery := &streamDeliveryState{}
+		emitter := newOpenAIStreamEmitter(r, w, flusher, id, model, usageTraceFrom(r.Context()), delivery)
+		if err := emitter.writeDelta(map[string]any{"content": answer}); err != nil {
+			return
+		}
+		finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "m365": compatM365Metadata(res), "usage": usage}
+		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finish)+"\n\n")
+		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+		recordUsage()
+		return
+	}
+	if trace := usageTraceFrom(r.Context()); trace != nil {
+		trace.markFirstToken()
+	}
+	recordUsage()
+	jsonOut(w, map[string]any{
+		"id":      id,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"message":       map[string]any{"role": "assistant", "content": answer},
+			"finish_reason": finishReason,
+		}},
+		"m365":  compatM365Metadata(res),
+		"usage": usage,
+	})
+}
+
+func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.Request, body *oaiReq, prompt, answer string, startedAt time.Time) {
+	model := firstNonEmpty(body.Model, defaultPublicModelName)
+	_, answer, truncated, _ := limitAssistantText(model, "", answer, body.outputTokenLimit())
+	finishReason := "stop"
+	if truncated {
+		finishReason = "length"
+	}
+	id := "chatcmpl-" + uuid.NewString()
+	created := time.Now().Unix()
+	inputTokens := EstimateTokens(prompt)
+	toolTokens := int64(estimateToolTokens(body.Model, body.Tools, body.ToolChoice))
+	outputTokens := EstimateTokens(answer)
+	promptTokens := inputTokens + toolTokens
+	usage := map[string]any{"prompt_tokens": promptTokens, "completion_tokens": outputTokens, "total_tokens": promptTokens + outputTokens}
+	recordUsage := func() {
+		s.recordUsage(r, auth.AccountToken{}, UsageRecord{
+			Time:         time.Now(),
+			Model:        model,
+			Endpoint:     "/v1/chat/completions",
+			Stream:       body.Stream,
+			InputTokens:  inputTokens,
+			ToolTokens:   toolTokens,
 			OutputTokens: outputTokens,
 			DurationMs:   time.Since(startedAt).Milliseconds(),
 			Status:       http.StatusOK,
@@ -2330,10 +3075,14 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 			"choices": []map[string]any{{
 				"index":         0,
 				"message":       map[string]any{"role": "assistant", "content": answer},
-				"finish_reason": "stop",
+				"finish_reason": finishReason,
 			}},
 			"usage": usage,
 		})
+		if trace := usageTraceFrom(r.Context()); trace != nil {
+			trace.markFirstToken()
+		}
+		recordUsage()
 		return
 	}
 
@@ -2345,21 +3094,15 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 		http.Error(w, "stream unsupported", http.StatusInternalServerError)
 		return
 	}
-	chunk := map[string]any{
-		"id":      id,
-		"object":  "chat.completion.chunk",
-		"created": created,
-		"model":   model,
-		"choices": []map[string]any{{
-			"index":         0,
-			"delta":         map[string]any{"role": "assistant", "content": answer},
-			"finish_reason": nil,
-		}},
+	delivery := &streamDeliveryState{}
+	emitter := newOpenAIStreamEmitter(r, w, flusher, id, model, usageTraceFrom(r.Context()), delivery)
+	if err := emitter.writeDelta(map[string]any{"content": answer}); err != nil {
+		return
 	}
-	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(chunk)+"\n\n")
-	finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usage}
+	finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": usage}
 	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finish)+"\n\n")
 	_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+	recordUsage()
 }
 
 const defaultPublicModelName = "m365-copilot"
@@ -2370,24 +3113,26 @@ const sessionHeaderName = "X-M365-Session-Id"
 // 路径共用。会话为内容键，云端的对话由 auto_cleanup 按 2h 闲置窗口回收，
 // 这里不再做"用完即删"，否则复用永远不可能命中。
 func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.Request, res chathub.Result, prompt, sentPrompt string, contextReused bool, startedAt time.Time) {
-	if res.ConversationID == "" {
-		return
+	if trace := usageTraceFrom(r.Context()); trace != nil && !body.Stream {
+		trace.markFirstToken()
 	}
-	if isTransientModelRequest(r) {
-		s.dropTransientConversation(res.ConversationID)
-		return
-	}
-	historyBody := *body
-	historyBody.Messages = append(cloneMessages(body.Messages), oaiMsg{
-		Role:             "assistant",
-		Content:          res.Text,
-		ReasoningContent: res.Reasoning,
-	})
-	s.sessionResolver.Bind(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r)
-	s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
-	if s.conversationManager.ShouldCleanup() {
-		if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
-			log.Printf("[conversation-manager] auto-cleaned %d conversations", len(cleaned))
+	if res.ConversationID != "" {
+		if isTransientModelRequest(r) {
+			s.dropTransientConversation(res.ConversationID)
+		} else {
+			historyBody := *body
+			historyBody.Messages = append(cloneMessages(body.Messages), oaiMsg{
+				Role:             "assistant",
+				Content:          res.Text,
+				ReasoningContent: res.Reasoning,
+			})
+			s.sessionResolver.Bind(res.SessionID, res.ConversationID, acc.ID, &historyBody, "", r)
+			s.conversationManager.Record(res.ConversationID, acc.ID, prompt)
+			if s.conversationManager.ShouldCleanup() {
+				if cleaned := s.conversationManager.Cleanup(); len(cleaned) > 0 {
+					log.Printf("[conversation-manager] auto-cleaned %d conversations", len(cleaned))
+				}
+			}
 		}
 	}
 
@@ -2407,14 +3152,13 @@ func (s *Server) bindConversation(acc auth.AccountToken, body *oaiReq, r *http.R
 	}
 	sessions := s.sessionResolver.ListSessionsForTenant(requestTenantID(r))
 	cacheStats.RecordRequest(apiKey, contextReused, inputTokens, tokensSaved, len(sessions))
-	s.usage.record(UsageRecord{
+	s.recordUsage(r, acc, UsageRecord{
 		Time:               time.Now(),
-		APIKeyPrefix:       apiKey,
-		AccountEmail:       acc.Email,
 		Model:              firstNonEmpty(body.Model, "m365-copilot"),
 		Endpoint:           "/v1/chat/completions",
 		Stream:             body.Stream,
 		InputTokens:        inputTokens,
+		ToolTokens:         int64(estimateToolTokens(body.Model, body.Tools, body.ToolChoice)),
 		OutputTokens:       EstimateTokens(res.Text),
 		HistoryTokens:      historyTokens,
 		ConversationReused: contextReused,
@@ -2438,6 +3182,13 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func estimatedChatPromptTokens(prompt string, body *oaiReq) int64 {
+	if body == nil {
+		return EstimateTokens(prompt)
+	}
+	return EstimateTokens(prompt) + int64(estimateToolTokens(body.Model, body.Tools, body.ToolChoice))
 }
 
 func extractOIDTID(accessToken string) (oid, tid string) {
