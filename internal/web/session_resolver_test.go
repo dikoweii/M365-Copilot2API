@@ -219,6 +219,34 @@ func TestResolverExplicitSessionUsesAbsoluteLongHistoryBoundary(t *testing.T) {
 	}
 }
 
+func TestResolverExplicitSessionSupportsClientHeadersAndBodyPrecedence(t *testing.T) {
+	for _, header := range requestSessionHeaderNames {
+		t.Run(header, func(t *testing.T) {
+			t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
+			sr := openSessionResolver()
+			bindReq := resolverTestRequest("203.0.113.10", "client-explicit", "alice")
+			bindReq.Header.Set(header, "header-session")
+			sr.Bind("upstream-session", "conv-explicit", "acc-explicit", &oaiReq{
+				SessionKey: "body-session",
+				Messages:   []oaiMsg{{Role: "user", Content: "first"}},
+			}, "", bindReq)
+
+			resolveReq := resolverTestRequest("203.0.113.10", "client-explicit", "alice")
+			resolveReq.Header.Set(header, "different-header-session")
+			res := sr.Resolve(resolveReq, &oaiReq{
+				SessionKey: "body-session",
+				Messages: []oaiMsg{
+					{Role: "user", Content: "first"},
+					{Role: "user", Content: "next"},
+				},
+			})
+			if res.IsNew || res.ConversationID != "conv-explicit" || res.AccountID != "acc-explicit" {
+				t.Fatalf("explicit session resolve = %#v", res)
+			}
+		})
+	}
+}
+
 func TestResolverEvictsAfterTTL(t *testing.T) {
 	t.Setenv("M365_SESSION_CACHE", filepath.Join(t.TempDir(), "sessions.json"))
 	sr := openSessionResolver()

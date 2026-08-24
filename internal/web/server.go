@@ -1565,8 +1565,10 @@ type oaiReq struct {
 	Functions           []json.RawMessage `json:"functions,omitempty"`
 	ToolChoice          any               `json:"tool_choice,omitempty"`
 	FunctionCall        any               `json:"function_call,omitempty"`
+	ParallelToolCalls   *bool             `json:"parallel_tool_calls,omitempty"`
 	Reasoning           *reasoningConfig  `json:"reasoning,omitempty"`
 	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	Stop                stopSequences     `json:"stop,omitempty"`
 	MaxTokens           int               `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
 }
@@ -1576,6 +1578,10 @@ func (r oaiReq) outputTokenLimit() int {
 		return r.MaxCompletionTokens
 	}
 	return r.MaxTokens
+}
+
+func (r oaiReq) refusesParallelTools() bool {
+	return r.ParallelToolCalls != nil && !*r.ParallelToolCalls
 }
 
 func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -1627,7 +1633,7 @@ func normalizeRequestTools(body *oaiReq) {
 
 func applyRequestSessionKey(body *oaiReq, r *http.Request) {
 	if body.SessionKey == "" {
-		body.SessionKey = strings.TrimSpace(r.Header.Get("X-M365-Session-ID"))
+		body.SessionKey = requestSessionKey(r)
 	}
 }
 
@@ -2060,7 +2066,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeVisibleToolResponse(r, w, streamDelivery, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), calls, routeRes)
 			return
 		}
@@ -2104,6 +2110,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		var deliveredReasoning strings.Builder
 		var pending strings.Builder
 		var streamedTools []detectedToolCall
+		stopFilter := newStopSequenceStreamFilter(body.Stop)
 		identityFilter := newPublicIdentityStreamFilter(model)
 		reasoningFilter := newPublicReasoningStreamFilter()
 		outputLimiter := newOutputTokenLimiter(model, body.outputTokenLimit())
@@ -2151,27 +2158,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			return writeReasoning(part)
 		}
-		handleEvent := func(ev chathub.StreamEvent) error {
-			switch ev.Kind {
-			case "tool":
-				hadToolEvent = true
-				if ev.ToolName != "" && len(ev.Arguments) > 0 {
-					streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
-				} else {
-					invalidToolEvent = true
-				}
-				return nil
-			case "reasoning":
-				return emitReasoning(ev.Text)
-			case "text":
-				if ev.Text == "" {
-					return nil
-				}
-			default:
+		processText := func(part string) error {
+			if part == "" {
 				return nil
 			}
-			text.WriteString(ev.Text)
-			pending.WriteString(ev.Text)
+			text.WriteString(part)
+			pending.WriteString(part)
 			v := pending.String()
 			if requiredTool {
 				return nil
@@ -2207,12 +2199,34 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		}
+		handleEvent := func(ev chathub.StreamEvent) error {
+			switch ev.Kind {
+			case "tool":
+				hadToolEvent = true
+				if ev.ToolName != "" && len(ev.Arguments) > 0 {
+					streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
+				} else {
+					invalidToolEvent = true
+				}
+				return nil
+			case "reasoning":
+				return emitReasoning(ev.Text)
+			case "text":
+				if ev.Text == "" {
+					return nil
+				}
+			default:
+				return nil
+			}
+			return processText(stopFilter.Push(ev.Text))
+		}
 		resetAttempt := func() {
 			text.Reset()
 			pending.Reset()
 			streamedTools = nil
 			hadToolEvent = false
 			invalidToolEvent = false
+			stopFilter = newStopSequenceStreamFilter(body.Stop)
 			identityFilter = newPublicIdentityStreamFilter(model)
 			reasoningFilter = newPublicReasoningStreamFilter()
 			emitter.resetFirst()
@@ -2245,7 +2259,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if err != nil && chathub.IsStreamInterrupted(err) && delivered.Len() > 0 && !requiredTool && !hadToolEvent {
+		if err != nil && chathub.IsStreamInterrupted(err) && delivered.Len() > 0 && !requiredTool && !hadToolEvent && !stopFilter.Stopped() {
 			resumeAttempts := s.settings.get().StreamResumeAttempts
 			partialResult := res
 			for attempt := 1; attempt <= resumeAttempts && r.Context().Err() == nil; attempt++ {
@@ -2263,6 +2277,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				identityFilter = newPublicIdentityStreamFilter(model)
 				reasoningFilter = newPublicReasoningStreamFilter()
 				pending.Reset()
+				continuation = stopFilter.Push(continuation)
+				continuation += stopFilter.Flush()
 				if writeErr := emitText(continuation); writeErr != nil {
 					log.Printf("[req-trace] id=%s stage=stream_resume_write attempt=%d err=%v", requestID, attempt, writeErr)
 					return
@@ -2317,8 +2333,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.accountPool.MarkSuccess(acc.ID)
 		if text.Len() == 0 && strings.TrimSpace(res.Text) != "" {
-			text.WriteString(res.Text)
-			pending.WriteString(res.Text)
+			if writeErr := processText(stopFilter.Push(res.Text)); writeErr != nil {
+				return
+			}
+		}
+		if tail := stopFilter.Flush(); tail != "" {
+			if writeErr := processText(tail); writeErr != nil {
+				return
+			}
 		}
 		rawCalls := drainMCPToolCalls(mcpCallQueue)
 		if len(rawCalls) == 0 {
@@ -2401,7 +2423,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 				return n
 			}())
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			stopKeepalive()
 			_ = writeVisibleToolResponse(r, w, streamDelivery, id, model, calls, toolResult)
 			if userLookupKey != "" && res.ConversationID != "" {
@@ -2432,6 +2454,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			finishReason = "length"
 			res.Text = delivered.String()
 			res.Reasoning = deliveredReasoning.String()
+		} else if stopFilter.Stopped() {
+			res.Text = delivered.String()
 		}
 		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}}
 		stopKeepalive()
@@ -2541,7 +2565,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, routeRes)
 			return
 		}
@@ -2572,7 +2596,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					for i := range calls {
 						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 					}
-					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+					calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 					_ = writeToolResponseTracked(r, w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, retryRes)
 					return
 				}
@@ -2604,6 +2628,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		defer stopKeepalive()
 		writeChunk := emitter.writeDelta
 		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
+		stopFilter := newStopSequenceStreamFilter(body.Stop)
 		reasoningFilter := newPublicReasoningStreamFilter()
 		outputLimiter := newOutputTokenLimiter(model, body.outputTokenLimit())
 		var deliveredContent strings.Builder
@@ -2631,8 +2656,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			return nil
 		}
 		onDelta := func(content string) error {
-			if content = contentFilter.Push(content); content != "" {
-				return writeContent(content)
+			if stopFilter.Stopped() {
+				return nil
+			}
+			if content = stopFilter.Push(content); content != "" {
+				return writeContent(contentFilter.Push(content))
 			}
 			return nil
 		}
@@ -2655,6 +2683,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					failoverReq.SessionID = ""
 				}
 				contentFilter = newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
+				stopFilter = newStopSequenceStreamFilter(body.Stop)
 				reasoningFilter = newPublicReasoningStreamFilter()
 				outputLimiter = newOutputTokenLimiter(model, body.outputTokenLimit())
 				deliveredContent.Reset()
@@ -2673,6 +2702,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 		}
 		if err == nil {
+			if content := stopFilter.Flush(); content != "" {
+				if writeErr := writeContent(contentFilter.Push(content)); writeErr != nil {
+					return
+				}
+			}
 			if content := contentFilter.Flush(); content != "" {
 				if writeErr := writeContent(content); writeErr != nil {
 					return
@@ -2685,7 +2719,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
-			if outputLimiter.Truncated() {
+			if outputLimiter.Truncated() || stopFilter.Stopped() {
 				res.Text = deliveredContent.String()
 				res.Reasoning = deliveredReasoning.String()
 			}
@@ -2712,7 +2746,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			ct = int64(outputLimiter.Tokens())
 		}
 		log.Printf("[usage] stream id=%s pt=%d ct=%d res.Text=%d", id, pt, ct, len(res.Text))
-		if ct == 0 {
+		if ct == 0 && !stopFilter.Stopped() {
 			stopKeepalive()
 			writeOpenAIStreamError(r.Context(), w, flusher, "upstream returned empty completion; the requested model may be unavailable for this tenant", "upstream_error")
 			return
@@ -2823,7 +2857,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = rejected > 0
 		if len(calls) > 0 {
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
@@ -2833,7 +2867,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = rejected > 0
 		if len(calls) > 0 {
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
@@ -2843,7 +2877,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = invalidDetectedTool || rejected > 0
 		if len(calls) > 0 {
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
@@ -2868,7 +2902,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				for i := range calls {
 					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 				}
-				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+				calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 				_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, routeRes)
 				return
 			}
@@ -2884,6 +2918,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+	res.Text, _ = truncateTextAtStop(res.Text, body.Stop)
 	if responseFormat != nil && (responseFormat.Type == "json_object" || responseFormat.Type == "json_schema") {
 		res.Text = normalizeJSONText(res.Text)
 	}
@@ -2974,6 +3009,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 
 func (s *Server) writeRoutedFinalAnswer(w http.ResponseWriter, r *http.Request, body oaiReq, prompt, answer string, res chathub.Result, acc auth.AccountToken, startedAt time.Time) {
 	answer = sanitizePublicAssistantTextForModel(answer, body.Model)
+	answer, _ = truncateTextAtStop(answer, body.Stop)
 	model := firstNonEmpty(body.Model, "m365-copilot")
 	_, answer, truncated, _ := limitAssistantText(model, "", answer, body.outputTokenLimit())
 	finishReason := "stop"
@@ -3041,6 +3077,7 @@ func (s *Server) writeRoutedFinalAnswer(w http.ResponseWriter, r *http.Request, 
 
 func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.Request, body *oaiReq, prompt, answer string, startedAt time.Time) {
 	model := firstNonEmpty(body.Model, defaultPublicModelName)
+	answer, _ = truncateTextAtStop(answer, body.Stop)
 	_, answer, truncated, _ := limitAssistantText(model, "", answer, body.outputTokenLimit())
 	finishReason := "stop"
 	if truncated {

@@ -100,17 +100,36 @@ func TestNormalizeRequestToolsChoiceNoneClearsModernAndLegacyTools(t *testing.T)
 }
 
 func TestApplyRequestSessionKeyUsesHeaderWithoutOverridingBody(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	req.Header.Set("X-M365-Session-ID", "header-session")
-	body := oaiReq{}
-	applyRequestSessionKey(&body, req)
-	if body.SessionKey != "header-session" {
-		t.Fatalf("header session key = %q", body.SessionKey)
+	for _, header := range requestSessionHeaderNames {
+		t.Run(header, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+			req.Header.Set(header, "header-session")
+			body := oaiReq{}
+			applyRequestSessionKey(&body, req)
+			if body.SessionKey != "header-session" {
+				t.Fatalf("header session key = %q", body.SessionKey)
+			}
+		})
 	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-M365-Session-Id", "header-session")
+	body := oaiReq{}
 	body.SessionKey = "body-session"
 	applyRequestSessionKey(&body, req)
 	if body.SessionKey != "body-session" {
 		t.Fatalf("body session key was overwritten: %q", body.SessionKey)
+	}
+}
+
+func TestRequestSessionKeyUsesStableHeaderPriority(t *testing.T) {
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("Session-Id", "legacy")
+	req.Header.Set("X-Claude-Code-Session-Id", "claude")
+	req.Header.Set("X-Session-Id", "generic")
+	req.Header.Set("X-M365-Session-Id", "m365")
+	if got := requestSessionKey(req); got != "m365" {
+		t.Fatalf("request session key = %q, want m365", got)
 	}
 }
 

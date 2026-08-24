@@ -273,6 +273,14 @@ func adaptiveToolCallLimit(c []detectedToolCall, configured int) int {
 	return configured
 }
 
+func limitRequestToolCalls(body *oaiReq, calls []detectedToolCall, configured int) []detectedToolCall {
+	limit := adaptiveToolCallLimit(calls, configured)
+	if body != nil && body.refusesParallelTools() {
+		limit = 1
+	}
+	return limitToolCalls(calls, limit)
+}
+
 func toolLooksMutating(name string) bool {
 	for _, word := range []string{"exec", "shell", "command", "write", "edit", "update", "delete", "remove", "move", "rename", "create", "patch", "apply", "install", "run"} {
 		if strings.Contains(name, word) {

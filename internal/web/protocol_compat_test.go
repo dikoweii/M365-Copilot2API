@@ -80,6 +80,18 @@ func TestResponsesCustomToolOutputToOpenAI(t *testing.T) {
 	}
 }
 
+func TestResponsesMapsParallelToolCalls(t *testing.T) {
+	parallel := false
+	r := responsesRequest{Input: "read both files", ParallelToolCalls: &parallel}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.refusesParallelTools() {
+		t.Fatalf("parallel_tool_calls was not mapped: %#v", o.ParallelToolCalls)
+	}
+}
+
 func TestAnthropicToOpenAI(t *testing.T) {
 	r := anthropicRequest{Model: "m", System: any("be concise"), Messages: []anthropicMessage{{Role: "user", Content: any("weather")}}, Tools: []anthropicTool{{Name: "weather", InputSchema: map[string]any{"type": "object"}}}}
 	o, err := r.openAI()
@@ -93,5 +105,22 @@ func TestAnthropicToolResult(t *testing.T) {
 	o, err := r.openAI()
 	if err != nil || len(o.Messages) != 2 || o.Messages[1].ToolCallID != "x" {
 		t.Fatalf("%+v %v", o, err)
+	}
+}
+
+func TestAnthropicDisablesParallelToolUse(t *testing.T) {
+	r := anthropicRequest{
+		Messages: []anthropicMessage{{Role: "user", Content: "read both files"}},
+		ToolChoice: map[string]any{
+			"type":                      "auto",
+			"disable_parallel_tool_use": true,
+		},
+	}
+	o, err := r.openAI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !o.refusesParallelTools() {
+		t.Fatalf("disable_parallel_tool_use was not mapped: %#v", o.ParallelToolCalls)
 	}
 }

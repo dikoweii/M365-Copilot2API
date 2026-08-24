@@ -546,7 +546,9 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, 400, "invalid_request_error", err.Error())
 		return
 	}
-	out, raw, status, err := s.runOpenAIAdapter(r, o)
+	adapterRequest := o
+	adapterRequest.Stop = nil
+	out, raw, status, err := s.runOpenAIAdapter(r, adapterRequest)
 	if status >= 400 {
 		writeAnthropicError(w, status, "api_error", errorMessage(raw, "upstream protocol error"))
 		return
@@ -556,6 +558,7 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream protocol error")
 		return
 	}
+	matchedStop := applyStopToChatCompletion(out, normalizeStopSequences(body.StopSequences))
 	applyAnthropicOutputLimit(out, firstNonEmpty(body.Model, "m365-copilot"), body.MaxTokens)
 	estimate := estimateResponsesUsage(firstNonEmpty(body.Model, "m365-copilot"), o.Messages, o.Tools, o.ToolChoice, chatCompletionUsageOutput(out))
 	toolTokens := estimateToolTokens(firstNonEmpty(body.Model, "m365-copilot"), o.Tools, o.ToolChoice)
@@ -570,7 +573,7 @@ func (s *Server) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		Status:       200,
 		UsageSource:  estimate.Source,
 	})
-	writeAnthropicResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out)
+	writeAnthropicResult(w, firstNonEmpty(body.Model, "m365-copilot"), body.Stream, out, matchedStop)
 }
 
 func chatCompletionUsageOutput(src map[string]any) string {

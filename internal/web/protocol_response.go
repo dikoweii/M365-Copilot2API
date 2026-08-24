@@ -21,7 +21,11 @@ func openAIChoice(v map[string]any) (map[string]any, string) {
 	return m, finish
 }
 
-func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src map[string]any) {
+func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src map[string]any, matchedStops ...string) {
+	matchedStop := ""
+	if len(matchedStops) > 0 {
+		matchedStop = matchedStops[0]
+	}
 	id := "msg_" + uuid.NewString()
 	msg, finish := openAIChoice(src)
 	sanitizePublicAssistantMessage(msg, model)
@@ -29,6 +33,8 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 	stop := "end_turn"
 	if finish == "length" {
 		stop = "max_tokens"
+	} else if matchedStop != "" {
+		stop = "stop_sequence"
 	}
 	if reasoning, _ := msg["reasoning_content"].(string); reasoning != "" {
 		blocks = append(blocks, map[string]any{"type": "thinking", "thinking": reasoning, "signature": ""})
@@ -102,7 +108,11 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 			}
 		}
 	}
-	out := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens}}
+	var stopSequence any
+	if matchedStop != "" {
+		stopSequence = matchedStop
+	}
+	out := map[string]any{"id": id, "type": "message", "role": "assistant", "model": model, "content": blocks, "stop_reason": stop, "stop_sequence": stopSequence, "usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens}}
 	if !stream {
 		jsonOut(w, out)
 		return
@@ -146,7 +156,7 @@ func writeAnthropicResult(w http.ResponseWriter, model string, stream bool, src 
 		}
 		emit("content_block_stop", map[string]any{"type": "content_block_stop", "index": i})
 	}
-	emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"output_tokens": outputTokens}})
+	emit("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stop, "stop_sequence": stopSequence}, "usage": map[string]any{"output_tokens": outputTokens}})
 	emit("message_stop", map[string]any{"type": "message_stop"})
 }
 

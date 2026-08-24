@@ -221,7 +221,7 @@ func (sr *sessionResolver) Resolve(r *http.Request, body *oaiReq) ResolveResult 
 	sr.evictLocked()
 
 	tenantID := requestTenantID(r)
-	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))
+	explicitID := explicitRequestSessionKey(r, body)
 
 	// 瀹㈡埛绔樉寮忔寚瀹氱殑浼氳瘽 ID 鏄渶楂樹紭鍏堢殑缁帴璇箟锛氫笉鍙備笌浠讳綍韬唤鍒ゅ畾锛?
 	// 鐢辫皟鐢ㄦ柟涓诲姩鍐冲畾瑕佺户缁摢涓簯绔璇濄€?
@@ -390,7 +390,7 @@ func (sr *sessionResolver) Bind(sessionID, conversationID, accountID string, bod
 	if strings.TrimSpace(assistantText) != "" {
 		history = append(history, oaiMsg{Role: "assistant", Content: assistantText})
 	}
-	explicitID := strings.TrimSpace(r.Header.Get("X-M365-Session-Id"))
+	explicitID := explicitRequestSessionKey(r, body)
 	if explicitID != "" && sessionID == "" {
 		sessionID = explicitID
 	}

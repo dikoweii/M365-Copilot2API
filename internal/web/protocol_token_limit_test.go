@@ -42,7 +42,7 @@ func TestAnthropicMaxTokensAppliesToJSONAndAdaptedStream(t *testing.T) {
 	plainSource := anthropicLimitTestSource(original)
 	applyAnthropicOutputLimit(plainSource, "gpt-5.5", 4)
 	plain := httptest.NewRecorder()
-	writeAnthropicResult(plain, "gpt-5.5", false, plainSource)
+	writeAnthropicResult(plain, "gpt-5.5", false, plainSource, "")
 	var body struct {
 		Content    []map[string]any `json:"content"`
 		StopReason string           `json:"stop_reason"`
@@ -62,7 +62,7 @@ func TestAnthropicMaxTokensAppliesToJSONAndAdaptedStream(t *testing.T) {
 	streamSource := anthropicLimitTestSource(original)
 	applyAnthropicOutputLimit(streamSource, "gpt-5.5", 4)
 	stream := httptest.NewRecorder()
-	writeAnthropicResult(stream, "gpt-5.5", true, streamSource)
+	writeAnthropicResult(stream, "gpt-5.5", true, streamSource, "")
 	streamBody := stream.Body.String()
 	if !strings.Contains(streamBody, `"stop_reason":"max_tokens"`) {
 		t.Fatalf("stream missing max_tokens stop reason: %s", streamBody)
@@ -79,7 +79,7 @@ func TestAnthropicOutputLimitAppliesAfterPublicIdentitySanitization(t *testing.T
 	}
 
 	rr := httptest.NewRecorder()
-	writeAnthropicResult(rr, "gpt-5.5", false, src)
+	writeAnthropicResult(rr, "gpt-5.5", false, src, "")
 	var body struct {
 		Content    []map[string]any `json:"content"`
 		StopReason string           `json:"stop_reason"`
