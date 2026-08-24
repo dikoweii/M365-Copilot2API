@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,6 +34,7 @@ func TestUpstreamErrorClassification(t *testing.T) {
 		{fmt.Errorf("Too many requests, slow down"), true, false, 0, http.StatusTooManyRequests},
 		{fmt.Errorf("account is limited"), true, false, 0, http.StatusTooManyRequests},
 		{fmt.Errorf("random failure"), false, false, 0, http.StatusBadGateway},
+		{context.DeadlineExceeded, false, false, 0, http.StatusGatewayTimeout},
 		{chathub.ErrRateLimitNotice, true, false, 0, http.StatusTooManyRequests},
 	}
 	for _, c := range cases {

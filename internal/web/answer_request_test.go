@@ -26,8 +26,8 @@ func TestBuildAnswerRequestRouterOmitsNativePlugins(t *testing.T) {
 	if len(req.Tools) != 0 || req.ToolChoice != nil {
 		t.Fatalf("router answer leaked native tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
 	}
-	if req.Text != "[user]\nhello" {
-		t.Fatalf("empty ledger changed answer prompt: %q", req.Text)
+	if !strings.HasPrefix(req.Text, "[user]\nhello\n") || !strings.Contains(req.Text, callerWorkspaceBoundaryRule) {
+		t.Fatalf("router answer lost caller workspace boundary: %q", req.Text)
 	}
 }
 
@@ -35,6 +35,20 @@ func TestBuildAnswerRequestNativeForwardsTools(t *testing.T) {
 	req := buildAnswerRequest("[user]\nhello", "magic", answerRequestTestBody(), agentLedger{}, "native", "")
 	if len(req.Tools) != 1 || req.ToolChoice != "auto" {
 		t.Fatalf("native answer lost tools: tools=%d choice=%#v", len(req.Tools), req.ToolChoice)
+	}
+	if !strings.Contains(req.Text, callerWorkspaceBoundaryRule) {
+		t.Fatalf("native answer lost caller workspace boundary: %q", req.Text)
+	}
+}
+
+func TestBuildAnswerRequestPreservesCallerWindowsPath(t *testing.T) {
+	path := `E:\san\dsguomo\projects\guo-mo-chang\prose\drafts\chapter-010.md`
+	req := buildAnswerRequest("[user]\n请读取 "+path, "magic", answerRequestTestBody(), agentLedger{}, "router", "")
+	if !strings.Contains(req.Text, path) {
+		t.Fatalf("caller path was changed: %q", req.Text)
+	}
+	if !strings.Contains(req.Text, "/mnt/data") || !strings.Contains(req.Text, "Do not infer") {
+		t.Fatalf("answer prompt lacks provider-filesystem prohibition: %q", req.Text)
 	}
 }
 
@@ -65,6 +79,9 @@ func TestBuildAnswerRequestToolChoiceNoneOmitsTools(t *testing.T) {
 	if len(req.Tools) != 0 || req.ToolChoice != nil || req.MCPServerURL != "" {
 		t.Fatalf("tool_choice=none forwarded tools: tools=%d choice=%#v mcp=%q", len(req.Tools), req.ToolChoice, req.MCPServerURL)
 	}
+	if strings.Contains(req.Text, callerWorkspaceBoundaryRule) {
+		t.Fatalf("tool_choice=none should not add caller workspace rules: %q", req.Text)
+	}
 }
 
 func TestNormalizeRequestToolsChoiceNoneClearsModernAndLegacyTools(t *testing.T) {
@@ -83,17 +100,36 @@ func TestNormalizeRequestToolsChoiceNoneClearsModernAndLegacyTools(t *testing.T)
 }
 
 func TestApplyRequestSessionKeyUsesHeaderWithoutOverridingBody(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
-	req.Header.Set("X-M365-Session-ID", "header-session")
-	body := oaiReq{}
-	applyRequestSessionKey(&body, req)
-	if body.SessionKey != "header-session" {
-		t.Fatalf("header session key = %q", body.SessionKey)
+	for _, header := range requestSessionHeaderNames {
+		t.Run(header, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+			req.Header.Set(header, "header-session")
+			body := oaiReq{}
+			applyRequestSessionKey(&body, req)
+			if body.SessionKey != "header-session" {
+				t.Fatalf("header session key = %q", body.SessionKey)
+			}
+		})
 	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-M365-Session-Id", "header-session")
+	body := oaiReq{}
 	body.SessionKey = "body-session"
 	applyRequestSessionKey(&body, req)
 	if body.SessionKey != "body-session" {
 		t.Fatalf("body session key was overwritten: %q", body.SessionKey)
+	}
+}
+
+func TestRequestSessionKeyUsesStableHeaderPriority(t *testing.T) {
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("Session-Id", "legacy")
+	req.Header.Set("X-Claude-Code-Session-Id", "claude")
+	req.Header.Set("X-Session-Id", "generic")
+	req.Header.Set("X-M365-Session-Id", "m365")
+	if got := requestSessionKey(req); got != "m365" {
+		t.Fatalf("request session key = %q, want m365", got)
 	}
 }
 

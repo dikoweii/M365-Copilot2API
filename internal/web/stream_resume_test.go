@@ -3,6 +3,8 @@ package web
 import (
 	"strings"
 	"testing"
+
+	"m365-copilot2api/internal/chathub"
 )
 
 func TestTrimStreamResumeOverlapHandlesCJKBoundary(t *testing.T) {
@@ -33,5 +35,21 @@ func TestStreamResumePromptIsBoundedAndContinuationOnly(t *testing.T) {
 	}
 	if len([]rune(prompt)) > streamResumePromptRunes+streamResumeTailRunes+1000 {
 		t.Fatalf("resume prompt is not bounded: %d runes", len([]rune(prompt)))
+	}
+}
+
+func TestDetachStreamResumeConversationClearsCacheIdentity(t *testing.T) {
+	var dropped string
+	result := detachStreamResumeConversation(chathub.Result{
+		Text: "complete answer", ConversationID: "resume-conversation", SessionID: "resume-session", RequestID: "upstream-request",
+	}, func(id string) { dropped = id })
+	if dropped != "resume-conversation" {
+		t.Fatalf("dropped conversation = %q", dropped)
+	}
+	if result.ConversationID != "" || result.SessionID != "" {
+		t.Fatalf("resume identity survived: %#v", result)
+	}
+	if result.Text != "complete answer" || result.RequestID != "upstream-request" {
+		t.Fatalf("resume content metadata was lost: %#v", result)
 	}
 }

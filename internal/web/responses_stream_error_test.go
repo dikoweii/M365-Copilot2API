@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 )
 
@@ -16,5 +17,31 @@ func TestResponsesAdapterRecognizesOpenAIStreamErrorShape(t *testing.T) {
 	}
 	if failure["code"] != "stream_interrupted" || failure["message"] != "upstream disconnected" {
 		t.Fatalf("unexpected failure: %#v", failure)
+	}
+}
+
+func TestResponsesStreamFailurePreservesDiagnosticsAndStatus(t *testing.T) {
+	failure := map[string]any{
+		"code":                "authentication_error",
+		"message":             "account refresh required",
+		"partial":             true,
+		"upstream_request_id": "upstream-1",
+		"failure_stage":       "websocket_close",
+		"upstream_close_code": float64(1006),
+	}
+	if got := responsesStreamFailureStatus(failure); got != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", got, http.StatusUnauthorized)
+	}
+	body := responsesStreamFailureBody(failure)
+	for _, key := range []string{"partial", "upstream_request_id", "failure_stage", "upstream_close_code"} {
+		if body[key] != failure[key] {
+			t.Fatalf("diagnostic %q was not preserved: %#v", key, body)
+		}
+	}
+}
+
+func TestResponsesStreamFailureMapsRateLimit(t *testing.T) {
+	if got := responsesStreamFailureStatus(map[string]any{"code": "rate_limit"}); got != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", got, http.StatusTooManyRequests)
 	}
 }

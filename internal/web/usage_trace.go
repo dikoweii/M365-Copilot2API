@@ -459,6 +459,8 @@ func usageErrorType(status int) string {
 		return "rate_limit"
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return "authentication"
+	case status == http.StatusGatewayTimeout:
+		return "timeout"
 	case status >= 500:
 		return "upstream_or_server"
 	case status >= 400:

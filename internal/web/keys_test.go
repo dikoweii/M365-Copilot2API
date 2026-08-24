@@ -1,8 +1,10 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"m365-copilot2api/internal/mcp"
@@ -92,6 +94,75 @@ func TestAPIKeyCreateRollsBackWhenPersistenceFails(t *testing.T) {
 	}
 	if got := len(store.Keys); got != 0 {
 		t.Fatalf("retained %d in-memory keys after failed save", got)
+	}
+}
+
+func TestAPIKeyRotateReplacesSecretAndRevokesOldKey(t *testing.T) {
+	store := newAPIKeyStore(t.TempDir() + "/api-keys.json")
+	old, oldRaw, err := store.create("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, newRaw, err := store.rotate(old.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ID == old.ID || replacement.Name != old.Name || newRaw == oldRaw {
+		t.Fatalf("unexpected replacement: old=%+v new=%+v", old, replacement)
+	}
+	if store.valid(oldRaw) {
+		t.Fatal("old key remained valid after rotation")
+	}
+	if !store.valid(newRaw) {
+		t.Fatal("replacement key is not valid")
+	}
+	if !store.Keys[0].Revoked || store.Keys[1].ID != replacement.ID {
+		t.Fatalf("unexpected key state after rotation: %+v", store.Keys)
+	}
+}
+
+func TestAPIKeyRotateRollsBackWhenPersistenceFails(t *testing.T) {
+	store := newAPIKeyStore(t.TempDir() + "/api-keys.json")
+	old, _, err := store.create("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Path = t.TempDir()
+	replacement, _, err := store.rotate(old.ID)
+	if err == nil || replacement.ID != "" {
+		t.Fatalf("replacement=%+v err=%v, want persistence failure", replacement, err)
+	}
+	if len(store.Keys) != 1 || store.Keys[0].ID != old.ID || store.Keys[0].Revoked {
+		t.Fatalf("key state not restored after failed rotation: %+v", store.Keys)
+	}
+}
+
+func TestAdminKeyRotateReturnsOneTimeReplacement(t *testing.T) {
+	store := newAPIKeyStore(t.TempDir() + "/api-keys.json")
+	old, oldRaw, err := store.create("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{apiKeys: store}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/keys/rotate", strings.NewReader(`{"id":"`+old.ID+`"}`))
+	recorder := httptest.NewRecorder()
+	server.adminKeyRotate(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rotate status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Key    string        `json:"key"`
+		Record apiKeyRecord  `json:"record"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Key == "" || body.Key == oldRaw || body.Record.ID == old.ID {
+		t.Fatalf("unexpected rotation response: %+v", body)
+	}
+	if store.valid(oldRaw) || !store.valid(body.Key) {
+		t.Fatal("rotation did not replace the active secret")
 	}
 }
 

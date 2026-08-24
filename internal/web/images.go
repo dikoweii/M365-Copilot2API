@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"m365-copilot2api/internal/auth"
 	"m365-copilot2api/internal/chathub"
 	"m365-copilot2api/internal/outbound"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,7 +26,9 @@ const (
 	designerAppServiceScope  = "https://designerappservice.officeapps.live.com/.default"
 	imageModelGPTImage2      = "gpt-image-2"
 	maxGeneratedImageBytes   = 20 << 20
-	maxImageEditRequestBytes = maxGeneratedImageBytes + (2 << 20)
+	maxImageEditAttachments  = 10
+	maxImageEditTotalBytes   = 64 << 20
+	maxImageEditRequestBytes = maxImageEditTotalBytes + (2 << 20)
 	generatedImageTTL        = 15 * time.Minute
 	maxGeneratedImages       = 128
 	imageBusyRetryAfter      = 60
@@ -124,7 +128,7 @@ func (s *Server) imageGenerations(w http.ResponseWriter, r *http.Request) {
 		}
 		endpoint = "/v1/images/edits"
 		usageEndpoint = endpoint
-		prompt = fmt.Sprintf("Edit the first attached image with GPT Image 2. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
+		prompt = fmt.Sprintf("Edit the attached image or images with GPT Image 2. Size: %s. Instructions: %s. Preserve everything not requested to change. Return the edited image URL directly.", size, b.Prompt)
 	}
 	chatRequest := chathub.Request{Text: prompt, Tone: "magic", Attachments: b.Attachments}
 	res, err := s.chatWithAccount(ctx, acc.ID, chathub.Account{AccessToken: acc.AccessToken, OID: acc.OID, TID: acc.TID}, chatRequest)
@@ -285,6 +289,75 @@ func populateImageURLs(res *chathub.Result) {
 	}
 }
 
+type imageEditValidationError struct {
+	status  int
+	message string
+}
+
+func (e *imageEditValidationError) Error() string {
+	return e.message
+}
+
+func imageEditFileHeaders(form *multipart.Form) []*multipart.FileHeader {
+	if form == nil {
+		return nil
+	}
+	files := append([]*multipart.FileHeader(nil), form.File["image"]...)
+	return append(files, form.File["image[]"]...)
+}
+
+func buildImageEditAttachments(headers []*multipart.FileHeader) ([]chathub.Attachment, *imageEditValidationError) {
+	if len(headers) == 0 {
+		return nil, &imageEditValidationError{status: http.StatusBadRequest, message: "image is required"}
+	}
+	if len(headers) > maxImageEditAttachments {
+		return nil, &imageEditValidationError{status: http.StatusBadRequest, message: "image count must be between 1 and 10"}
+	}
+
+	attachments := make([]chathub.Attachment, 0, len(headers))
+	for _, header := range headers {
+		if header.Size > maxGeneratedImageBytes {
+			return nil, &imageEditValidationError{status: http.StatusRequestEntityTooLarge, message: "image exceeds 20 MiB"}
+		}
+		file, err := header.Open()
+		if err != nil {
+			return nil, &imageEditValidationError{status: http.StatusBadRequest, message: "could not read image"}
+		}
+		imageData, readErr := io.ReadAll(io.LimitReader(file, maxGeneratedImageBytes+1))
+		_ = file.Close()
+		if readErr != nil {
+			return nil, &imageEditValidationError{status: http.StatusBadRequest, message: "could not read image"}
+		}
+		if len(imageData) > maxGeneratedImageBytes {
+			return nil, &imageEditValidationError{status: http.StatusRequestEntityTooLarge, message: "image exceeds 20 MiB"}
+		}
+
+		contentType := http.DetectContentType(imageData)
+		ext := ""
+		switch contentType {
+		case "image/png":
+			ext = "png"
+		case "image/jpeg":
+			ext = "jpg"
+		case "image/webp":
+			ext = "webp"
+		default:
+			return nil, &imageEditValidationError{status: http.StatusBadRequest, message: "image must be PNG, JPEG, or WebP"}
+		}
+		name := strings.TrimSpace(header.Filename)
+		if name == "" {
+			name = "image." + ext
+		}
+		attachments = append(attachments, chathub.Attachment{
+			Type:     "image",
+			URL:      "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(imageData),
+			Name:     name,
+			MimeType: contentType,
+		})
+	}
+	return attachments, nil
+}
+
 func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 	startedAt := time.Now()
 	r, _ = ensureUsageTrace(r, startedAt)
@@ -301,8 +374,17 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusMethodNotAllowed, "invalid_request_error", "method not allowed")
 		return
 	}
+	if r.ContentLength > maxImageEditRequestBytes {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "image edit request is too large")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxImageEditRequestBytes)
 	if err := r.ParseMultipartForm(1 << 20); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "image edit request is too large")
+			return
+		}
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid multipart image edit request")
 		return
 	}
@@ -315,48 +397,19 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "prompt is required")
 		return
 	}
-	file, header, err := r.FormFile("image")
-	if err != nil {
-		file, header, err = r.FormFile("image[]")
-	}
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "image is required")
+	attachments, validationErr := buildImageEditAttachments(imageEditFileHeaders(r.MultipartForm))
+	if validationErr != nil {
+		writeOpenAIError(w, validationErr.status, "invalid_request_error", validationErr.message)
 		return
-	}
-	defer file.Close()
-	imageData, err := io.ReadAll(io.LimitReader(file, maxGeneratedImageBytes+1))
-	if err != nil {
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "could not read image")
-		return
-	}
-	if len(imageData) > maxGeneratedImageBytes {
-		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "image exceeds 20 MiB")
-		return
-	}
-	contentType := http.DetectContentType(imageData)
-	ext := ""
-	switch contentType {
-	case "image/png":
-		ext = "png"
-	case "image/jpeg":
-		ext = "jpg"
-	case "image/webp":
-		ext = "webp"
-	default:
-		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "image must be PNG, JPEG, or WebP")
-		return
-	}
-	name := strings.TrimSpace(header.Filename)
-	if name == "" {
-		name = "image." + ext
 	}
 	n := 1
 	if rawN := strings.TrimSpace(r.FormValue("n")); rawN != "" {
-		n, err = strconv.Atoi(rawN)
+		parsedN, err := strconv.Atoi(rawN)
 		if err != nil {
 			writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "n must be an integer")
 			return
 		}
+		n = parsedN
 	}
 	body := imageGenerationRequest{
 		Prompt:         prompt,
@@ -367,12 +420,7 @@ func (s *Server) imageEdits(w http.ResponseWriter, r *http.Request) {
 		AccountID:      firstNonEmpty(strings.TrimSpace(r.FormValue("accountId")), strings.TrimSpace(r.FormValue("account_id"))),
 		User:           strings.TrimSpace(r.FormValue("user")),
 		Operation:      "edit",
-		Attachments: []chathub.Attachment{{
-			Type:     "image",
-			URL:      "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(imageData),
-			Name:     name,
-			MimeType: contentType,
-		}},
+		Attachments:    attachments,
 	}
 	usageModel = firstNonEmpty(body.Model, imageModelGPTImage2)
 	encoded, err := json.Marshal(body)

@@ -69,6 +69,16 @@ func IsStreamInterrupted(err error) bool {
 	return errors.As(err, &interrupted)
 }
 
+func completionFrameFailure(snapshot Result, cause error) (Result, error) {
+	if snapshot.Text == "" && snapshot.Reasoning == "" {
+		return Result{}, cause
+	}
+	snapshot.Incomplete = true
+	snapshot.FailureStage = "completion_error"
+	snapshot.UpstreamCloseCode = 0
+	return snapshot, &StreamInterruptedError{Stage: snapshot.FailureStage, Cause: cause}
+}
+
 var chTrace = os.Getenv("M365_TRACE") == "1"
 
 func truncate(s string, n int) string {
@@ -484,7 +494,14 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 
 			// SignalR ping
 			if int(t) == 6 {
-				_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":6}`+rs))
+				if err := conn.SetWriteDeadline(time.Now().Add(15 * time.Second)); err != nil {
+					returnConn = false
+					return resultSnapshot(true, "ping_write_deadline", 0), &StreamInterruptedError{Stage: "ping_write_deadline", Cause: err}
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":6}`+rs)); err != nil {
+					returnConn = false
+					return resultSnapshot(true, "ping_write", 0), &StreamInterruptedError{Stage: "ping_write", Cause: err}
+				}
 				continue
 			}
 
@@ -582,7 +599,8 @@ func (c *Client) chatWithHandlers(ctx context.Context, acc Account, req Request,
 			if int(t) == 3 {
 				if errObj, ok := obj["error"].(map[string]any); ok {
 					returnConn = false
-					return Result{}, fmt.Errorf("chathub completion error: %v", errObj)
+					cause := fmt.Errorf("chathub completion error: %v", errObj)
+					return completionFrameFailure(resultSnapshot(false, "", 0), cause)
 				}
 				log.Printf("chathub timing completion_frame_ms=%d streamed_text=%d events=%d", time.Since(payloadSentAt).Milliseconds(), streamed.Len(), len(events))
 				text := streamed.String()

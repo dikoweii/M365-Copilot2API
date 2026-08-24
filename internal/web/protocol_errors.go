@@ -11,14 +11,20 @@ func errorMessage(raw []byte, fallback string) string {
 	if json.Unmarshal(raw, &v) == nil {
 		if e, ok := v["error"].(map[string]any); ok {
 			if s, ok := e["message"].(string); ok && s != "" {
-				return s
+				return safeProtocolErrorMessage(s, fallback)
 			}
 		}
 	}
-	if s := strings.TrimSpace(string(raw)); s != "" {
-		return s
-	}
 	return fallback
+}
+
+func safeProtocolErrorMessage(message, fallback string) string {
+	message = strings.TrimSpace(message)
+	lower := strings.ToLower(message)
+	if message == "" || len(message) > 512 || strings.Contains(lower, "http://") || strings.Contains(lower, "https://") || strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") {
+		return fallback
+	}
+	return message
 }
 func writeOpenAIError(w http.ResponseWriter, status int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json")

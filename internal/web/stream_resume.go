@@ -3,6 +3,8 @@ package web
 import (
 	"fmt"
 	"strings"
+
+	"m365-copilot2api/internal/chathub"
 )
 
 const (
@@ -63,4 +65,15 @@ func trimStreamResumeOverlap(partialText, continuation string) (string, int) {
 		}
 	}
 	return string(next), 0
+}
+
+// detachStreamResumeConversation prevents the short-lived continuation chat
+// from becoming the cached conversation for the caller's full history.
+func detachStreamResumeConversation(result chathub.Result, drop func(string)) chathub.Result {
+	if result.ConversationID != "" && drop != nil {
+		drop(result.ConversationID)
+	}
+	result.ConversationID = ""
+	result.SessionID = ""
+	return result
 }

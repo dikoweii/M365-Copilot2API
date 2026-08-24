@@ -79,7 +79,8 @@ func TestVisibleStreamEventsDisableAccountRetry(t *testing.T) {
 		req, trace := ensureUsageTrace(req, time.Now().Add(-25*time.Millisecond))
 		recorder := httptest.NewRecorder()
 		delivery := &streamDeliveryState{}
-		if err := writeVisibleSSE(req, recorder, recorder, "progress", map[string]any{"type": "progress", "text": "searching"}, delivery, trace); err != nil {
+		emitter := newOpenAIStreamEmitter(req, recorder, recorder, "", "m365-copilot", trace, delivery)
+		if err := writeVisibleSSE(emitter, "progress", map[string]any{"type": "progress", "text": "searching"}, delivery, trace); err != nil {
 			t.Fatal(err)
 		}
 		if delivery.canRetry() || trace.snapshot().TTFTMs == 0 || !strings.Contains(recorder.Body.String(), "event: progress") {

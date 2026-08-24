@@ -16,7 +16,9 @@ type responsesRequest struct {
 	Input              any              `json:"input"`
 	Tools              []map[string]any `json:"tools,omitempty"`
 	ToolChoice         any              `json:"tool_choice,omitempty"`
+	ParallelToolCalls  *bool            `json:"parallel_tool_calls,omitempty"`
 	Stream             bool             `json:"stream,omitempty"`
+	MaxOutputTokens    int              `json:"max_output_tokens,omitempty"`
 	User               string           `json:"user,omitempty"`
 	Reasoning          *reasoningConfig `json:"reasoning,omitempty"`
 	PreviousResponseID string           `json:"previous_response_id,omitempty"`
@@ -27,7 +29,7 @@ type responsesRequest struct {
 const customExecWorkspaceInstruction = `You are operating through the caller's local OpenCode execution bridge. Never use, request, or mention Microsoft 365/Copilot native tools. The only permitted execution tool is the caller-provided custom exec tool. The executor already starts in the caller-selected project workspace. Use relative paths only; never guess, cd to, or write under /root, /workspace, /tmp, or any other absolute project path. Inspect pwd and ls before changes. Do not create files outside the current working directory. Never claim a file was created, modified, or verified until custom exec returns a successful result. After every execution, use custom exec to verify the result.`
 
 func (r responsesRequest) openAI() (oaiReq, error) {
-	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, User: r.User}
+	o := oaiReq{Model: r.Model, AccountID: r.AccountID, Stream: r.Stream, ToolChoice: r.ToolChoice, ParallelToolCalls: r.ParallelToolCalls, User: r.User, MaxCompletionTokens: r.MaxOutputTokens}
 	if instructions := strings.TrimSpace(r.Instructions); instructions != "" {
 		o.Messages = append(o.Messages, oaiMsg{Role: "system", Content: instructions})
 	}
@@ -148,17 +150,18 @@ type anthropicTool struct {
 	InputSchema map[string]any `json:"input_schema"`
 }
 type anthropicRequest struct {
-	Model      string             `json:"model"`
-	System     any                `json:"system,omitempty"`
-	Messages   []anthropicMessage `json:"messages"`
-	Tools      []anthropicTool    `json:"tools,omitempty"`
-	ToolChoice any                `json:"tool_choice,omitempty"`
-	Stream     bool               `json:"stream,omitempty"`
-	MaxTokens  int                `json:"max_tokens,omitempty"`
+	Model         string             `json:"model"`
+	System        any                `json:"system,omitempty"`
+	Messages      []anthropicMessage `json:"messages"`
+	Tools         []anthropicTool    `json:"tools,omitempty"`
+	ToolChoice    any                `json:"tool_choice,omitempty"`
+	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Stream        bool               `json:"stream,omitempty"`
+	MaxTokens     int                `json:"max_tokens,omitempty"`
 }
 
 func (r anthropicRequest) openAI() (oaiReq, error) {
-	o := oaiReq{Model: r.Model, Stream: r.Stream}
+	o := oaiReq{Model: r.Model, Stream: r.Stream, Stop: normalizeStopSequences(r.StopSequences)}
 	if r.System != nil {
 		o.Messages = append(o.Messages, oaiMsg{Role: "system", Content: r.System})
 	}
@@ -226,6 +229,10 @@ func (r anthropicRequest) openAI() (oaiReq, error) {
 		o.Tools = append(o.Tools, chathub.Tool{Type: "function", Function: b})
 	}
 	if c, ok := r.ToolChoice.(map[string]any); ok {
+		if disabled, _ := c["disable_parallel_tool_use"].(bool); disabled {
+			parallel := false
+			o.ParallelToolCalls = &parallel
+		}
 		switch c["type"] {
 		case "auto":
 			o.ToolChoice = "auto"

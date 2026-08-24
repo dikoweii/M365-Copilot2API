@@ -66,15 +66,21 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestID := requestIDFrom(r)
-	if err := writeSSE(r, w, flusher, "connected", map[string]any{"type": "connected", "requestId": requestID}); err != nil {
+	delivery := &streamDeliveryState{}
+	emitter := newOpenAIStreamEmitter(r, w, flusher, "", "m365-copilot", trace, delivery)
+	emit := func(name string, value any) error {
+		return writeNamedSSE(emitter, name, value)
+	}
+	if err := emit("connected", map[string]any{"type": "connected", "requestId": requestID}); err != nil {
 		return
 	}
+	stopKeepalive := emitter.startKeepalive(sseKeepaliveInterval)
+	defer stopKeepalive()
 
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 	defer cancel()
 	identityFilter := newPublicIdentityStreamFilter(defaultPublicModelName)
 	reasoningFilter := newPublicReasoningStreamFilter()
-	delivery := &streamDeliveryState{}
 	deltaIndex := 0
 	toolCallCount := 0
 	emitDelta := func(kind, value string) error {
@@ -87,7 +93,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		} else {
 			payload["delta"] = value
 		}
-		if err := writeVisibleSSE(r, w, flusher, kind, payload, delivery, trace); err != nil {
+		if err := writeVisibleSSE(emitter, kind, payload, delivery, trace); err != nil {
 			return err
 		}
 		deltaIndex++
@@ -104,7 +110,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 				toolCallCount++
 				trace.setToolCalls(toolCallCount)
 			}
-			return writeVisibleSSE(r, w, flusher, "progress", map[string]any{
+			return writeVisibleSSE(emitter, "progress", map[string]any{
 				"type": event.Kind, "text": event.Text, "tool": event.ToolName,
 				"arguments": event.Arguments, "requestId": requestID,
 			}, delivery, trace)
@@ -138,7 +144,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		s.recordUsage(r, acc, UsageRecord{
 			Model: "m365-copilot", Endpoint: "/api/chat/stream", Stream: true,
 			InputTokens: EstimateTokens(text), DurationMs: time.Since(startedAt).Milliseconds(),
-			Status: status, ErrorType: usageErrorType(status), ErrorMessage: message,
+			Status: status, ErrorType: failureType, ErrorMessage: message,
 		})
 		payload := map[string]any{"type": "error", "message": message, "code": streamErrorCode(err), "requestId": requestID}
 		if res.Incomplete {
@@ -151,7 +157,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 				payload["upstreamCloseCode"] = res.UpstreamCloseCode
 			}
 		}
-		_ = writeSSE(r, w, flusher, "error", payload)
+		_ = emit("error", payload)
 		return
 	}
 	if value := identityFilter.Flush(); value != "" {
@@ -181,7 +187,7 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 			"sessionId":      res.SessionID,
 			"requestId":      res.RequestID,
 		}
-		if err := writeSSE(r, w, flusher, "event", payload); err != nil {
+		if err := emit("event", payload); err != nil {
 			return
 		}
 	}
@@ -189,11 +195,11 @@ func (s *Server) chatStream(w http.ResponseWriter, r *http.Request) {
 		if !emitCompatibilitySemantic(event) {
 			continue
 		}
-		if err := writeSSE(r, w, flusher, "semantic", map[string]any{"index": i, "type": "m365.semantic", "event": event}); err != nil {
+		if err := emit("semantic", map[string]any{"index": i, "type": "m365.semantic", "event": event}); err != nil {
 			return
 		}
 	}
-	if err := writeSSE(r, w, flusher, "done", map[string]any{
+	if err := emit("done", map[string]any{
 		"type": "done", "text": res.Text,
 		"conversationId": res.ConversationID, "sessionId": res.SessionID, "requestId": res.RequestID,
 		"throttling": res.Throttling,
@@ -215,8 +221,13 @@ func emitCompatibilitySemantic(event chathub.SemanticEvent) bool {
 	return event.Kind != "message" || event.ContentType != "" || event.MessageType != ""
 }
 
-func writeVisibleSSE(r *http.Request, w http.ResponseWriter, flusher http.Flusher, name string, value any, delivery *streamDeliveryState, trace *usageTrace) error {
-	if err := writeSSE(r, w, flusher, name, value); err != nil {
+func writeNamedSSE(emitter *openAIStreamEmitter, name string, value any) error {
+	b, _ := json.Marshal(value)
+	return emitter.writeRaw(fmt.Sprintf("event: %s\ndata: %s\n\n", name, b))
+}
+
+func writeVisibleSSE(emitter *openAIStreamEmitter, name string, value any, delivery *streamDeliveryState, trace *usageTrace) error {
+	if err := writeNamedSSE(emitter, name, value); err != nil {
 		return err
 	}
 	delivery.markVisible(trace)

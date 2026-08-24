@@ -93,3 +93,12 @@ func TestAdaptiveToolCallLimitAllowsIndependentReadOnlyCalls(t *testing.T) {
 		t.Fatalf("got %d, want 4", got)
 	}
 }
+
+func TestLimitRequestToolCallsHonorsParallelRefusal(t *testing.T) {
+	parallel := false
+	body := oaiReq{ParallelToolCalls: &parallel}
+	calls := []detectedToolCall{{Name: "read_file"}, {Name: "list_files"}}
+	if got := limitRequestToolCalls(&body, calls, 4); len(got) != 1 {
+		t.Fatalf("parallel_tool_calls=false returned %d calls", len(got))
+	}
+}

@@ -156,7 +156,7 @@ func New() (*Server, error) {
 			sessionTTL = d
 		}
 	}
-	return &Server{
+	server := &Server{
 		tokens:             store,
 		accountPool:        newAccountHealth(),
 		accountConcurrency: newAccountConcurrency(),
@@ -181,7 +181,15 @@ func New() (*Server, error) {
 		usage:               openUsageLog(),
 		generatedImages:     map[string]generatedImage{},
 		convCache:           newConversationCache(),
-	}, nil
+	}
+	store.SetSSOReauth(func(acc auth.AccountToken) (auth.TokenSet, error) {
+		cookies, err := store.LoadSSOCookies(acc.ID)
+		if err != nil {
+			return auth.TokenSet{}, err
+		}
+		return auth.ReauthAccountWithCookies(acc, cookies)
+	})
+	return server, nil
 }
 
 func (s *Server) StartConvCacheGC() {
@@ -228,6 +236,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/admin/session", s.adminSession)
 	m.HandleFunc("/api/admin/change-password", s.adminChangePassword)
 	m.HandleFunc("/api/admin/keys", s.adminKeys)
+	m.HandleFunc("/api/admin/keys/rotate", s.adminKeyRotate)
 	m.HandleFunc("/api/admin/models", s.adminModels)
 	m.HandleFunc("/api/admin/models/test", s.adminModelTest)
 	m.HandleFunc("/api/admin/models/sync", s.adminModelSync)
@@ -249,6 +258,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/api/accounts/delete", s.deleteAccount)
 	m.HandleFunc("/api/accounts/provision", s.provisionAccount)
 	m.HandleFunc("/api/accounts/bind-proxy", s.bindProxy)
+	m.HandleFunc("/api/accounts/sso-cookie", s.accountSSOCookie)
 	m.HandleFunc("/api/auth/start", s.startPKCE)
 	m.HandleFunc("/api/auth/status", s.pkceStatus)
 	m.HandleFunc("/api/auth/callback", s.callbackPKCE)
@@ -276,6 +286,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("/v1/mcp/message", mcp.HandleMessage)
 	m.HandleFunc("/v1/mcp/tools", mcp.HandleToolsList)
 	m.HandleFunc("/v1/messages", s.anthropicMessages)
+	m.HandleFunc("/v1/messages/count_tokens", s.anthropicCountTokens)
 	m.HandleFunc("/v1/images/generations", s.imageGenerations)
 	m.HandleFunc("/v1/images/edits", s.imageEdits)
 	m.HandleFunc("/v1/images/files/", s.generatedImageFile)
@@ -486,6 +497,30 @@ func (s *Server) adminKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) adminKeyRotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var b struct {
+		ID string `json:"id"`
+	}
+	if json.NewDecoder(r.Body).Decode(&b) != nil || strings.TrimSpace(b.ID) == "" {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	record, raw, err := s.apiKeys.rotate(b.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if record.ID == "" {
+		http.Error(w, "key not found", http.StatusNotFound)
+		return
+	}
+	jsonOut(w, map[string]any{"key": raw, "record": record})
+}
+
 type apiTenantContextKey struct{}
 
 func requestAPICredential(r *http.Request) string {
@@ -560,19 +595,20 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 	}
 	list := s.tokens.List()
 	type view struct {
-		ID              string     `json:"id"`
-		Email           string     `json:"email"`
-		DisplayName     string     `json:"displayName,omitempty"`
-		Status          string     `json:"status"`
-		ScheduleEnabled bool       `json:"scheduleEnabled"`
-		CallCount       uint64     `json:"callCount"`
-		RateLimited     bool       `json:"rateLimited"`
-		CooldownUntil   *time.Time `json:"cooldownUntil,omitempty"`
-		OID             string     `json:"oid,omitempty"`
-		TID             string     `json:"tid,omitempty"`
-		ExpiresAt       time.Time  `json:"expiresAt,omitempty"`
-		UpdatedAt       time.Time  `json:"updatedAt,omitempty"`
-		BoundProxy      string     `json:"boundProxy,omitempty"`
+		ID              string         `json:"id"`
+		Email           string         `json:"email"`
+		DisplayName     string         `json:"displayName,omitempty"`
+		Status          string         `json:"status"`
+		ScheduleEnabled bool           `json:"scheduleEnabled"`
+		CallCount       uint64         `json:"callCount"`
+		RateLimited     bool           `json:"rateLimited"`
+		CooldownUntil   *time.Time     `json:"cooldownUntil,omitempty"`
+		OID             string         `json:"oid,omitempty"`
+		TID             string         `json:"tid,omitempty"`
+		ExpiresAt       time.Time      `json:"expiresAt,omitempty"`
+		UpdatedAt       time.Time      `json:"updatedAt,omitempty"`
+		BoundProxy      string         `json:"boundProxy,omitempty"`
+		SSO             auth.SSOStatus `json:"sso"`
 	}
 	out := make([]view, 0, len(list))
 	for _, a := range list {
@@ -588,11 +624,12 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			callCount = s.accountPool.CallCount(a.ID)
 			rateLimited = s.accountPool.RateLimited(a.ID)
 		}
+		ssoStatus, _ := s.tokens.SSOStatus(a.ID)
 		out = append(out, view{
 			ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
 			Status: status, ScheduleEnabled: !a.ScheduleDisabled, CallCount: callCount, RateLimited: rateLimited,
 			CooldownUntil: cooldownUntil, OID: a.OID, TID: a.TID,
-			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy,
+			ExpiresAt: a.ExpiresAt, UpdatedAt: a.UpdatedAt, BoundProxy: a.BoundProxy, SSO: ssoStatus,
 		})
 	}
 	jsonOut(w, map[string]any{"accounts": out, "health": s.accountPool.Snapshot()})
@@ -1525,11 +1562,26 @@ type oaiReq struct {
 	Attachments     []chathub.Attachment `json:"attachments,omitempty"`
 	Tools           []chathub.Tool       `json:"tools,omitempty"`
 	// Legacy OpenAI-compatible clients still send functions/function_call.
-	Functions       []json.RawMessage `json:"functions,omitempty"`
-	ToolChoice      any               `json:"tool_choice,omitempty"`
-	FunctionCall    any               `json:"function_call,omitempty"`
-	Reasoning       *reasoningConfig  `json:"reasoning,omitempty"`
-	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	Functions           []json.RawMessage `json:"functions,omitempty"`
+	ToolChoice          any               `json:"tool_choice,omitempty"`
+	FunctionCall        any               `json:"function_call,omitempty"`
+	ParallelToolCalls   *bool             `json:"parallel_tool_calls,omitempty"`
+	Reasoning           *reasoningConfig  `json:"reasoning,omitempty"`
+	ReasoningEffort     string            `json:"reasoning_effort,omitempty"`
+	Stop                stopSequences     `json:"stop,omitempty"`
+	MaxTokens           int               `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int               `json:"max_completion_tokens,omitempty"`
+}
+
+func (r oaiReq) outputTokenLimit() int {
+	if r.MaxCompletionTokens > 0 {
+		return r.MaxCompletionTokens
+	}
+	return r.MaxTokens
+}
+
+func (r oaiReq) refusesParallelTools() bool {
+	return r.ParallelToolCalls != nil && !*r.ParallelToolCalls
 }
 
 func mustJSON(v any) string { b, _ := json.Marshal(v); return string(b) }
@@ -1581,11 +1633,14 @@ func normalizeRequestTools(body *oaiReq) {
 
 func applyRequestSessionKey(body *oaiReq, r *http.Request) {
 	if body.SessionKey == "" {
-		body.SessionKey = strings.TrimSpace(r.Header.Get("X-M365-Session-ID"))
+		body.SessionKey = requestSessionKey(r)
 	}
 }
 
 func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedger, planningMode string, mcpServerURL string) chathub.Request {
+	if !toolChoiceDisablesTools(body.ToolChoice) && hasCallerWorkspaceBodyTool(body.Tools) {
+		answerPrompt += "\n" + callerWorkspaceBoundaryRule
+	}
 	if len(ledger.Completed) > 0 || len(ledger.Pending) > 0 {
 		answerPrompt += "\n" + ledger.RouterContext()
 	}
@@ -1605,6 +1660,18 @@ func buildAnswerRequest(answerPrompt, tone string, body oaiReq, ledger agentLedg
 		req.MCPServerURL = mcpServerURL
 	}
 	return req
+}
+
+func hasCallerWorkspaceBodyTool(tools []chathub.Tool) bool {
+	toolMaps := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		var function map[string]any
+		if json.Unmarshal(tool.Function, &function) != nil {
+			continue
+		}
+		toolMaps = append(toolMaps, map[string]any{"type": tool.Type, "function": function})
+	}
+	return hasCallerWorkspaceTool(toolMaps)
 }
 
 func mcpToolsFromRequest(tools []chathub.Tool) []mcp.Tool {
@@ -1720,6 +1787,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
+	if body.MaxTokens < 0 || body.MaxCompletionTokens < 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "output token limit must be non-negative")
+		return
+	}
 	responseFormat := body.ResponseFormat
 	effort := body.ReasoningEffort
 	if body.Reasoning != nil && strings.TrimSpace(body.Reasoning.Effort) != "" {
@@ -1733,7 +1804,12 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	normalizeRequestTools(&body)
 	body.ConversationID = firstNonEmpty(body.ConversationID, body.ConversationIDC)
 	body.SessionID = firstNonEmpty(body.SessionID, body.SessionIDC)
-	applyRequestSessionKey(&body, r)
+	transientRequest := isTransientModelRequest(r)
+	if transientRequest {
+		isolateTransientModelRequest(&body)
+	} else {
+		applyRequestSessionKey(&body, r)
+	}
 	tenantID := requestTenantID(r)
 	sessionLookupKey := tenantScopedID(tenantID, body.SessionKey)
 	userLookupKey := tenantScopedID(tenantID, body.User)
@@ -1745,6 +1821,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Tool evidence and round limits apply only to the current user turn. Older
 	// calls may legitimately be repeated in a later turn with the same arguments.
 	activeLedger := buildAgentLedger(activeMessages(body.Messages))
+	responseFormatType := ""
+	if body.ResponseFormat != nil {
+		responseFormatType = body.ResponseFormat.Type
+	}
+	log.Printf("[req-trace] id=%s stage=tool_state completed=%d pending=%d rounds=%d response_format=%q", requestID, len(activeLedger.Completed), len(activeLedger.Pending), activeLedger.ToolRounds, responseFormatType)
 	if err := activeLedger.CanContinue(maxToolRounds()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -1787,7 +1868,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	answerPrompt := prompt
 	contextReused := false
 	resolvedConversationID := ""
-	if body.ConversationID == "" && len(body.Messages) > 0 {
+	if !transientRequest && body.ConversationID == "" && len(body.Messages) > 0 {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			resolvedConversationID = resolved.ConversationID
@@ -1830,7 +1911,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// was provided by client, session key, user session, or session resolver.
 	convReused := false
 	convCacheModel := firstNonEmpty(body.Model, "m365-copilot")
-	convCacheScope := conversationCacheScope(r, body)
+	convCacheScope := ""
+	if !transientRequest {
+		convCacheScope = conversationCacheScope(r, body)
+	}
 	if convCacheScope != "" && body.ConversationID == "" && len(body.Messages) > 1 {
 		sysHash := systemPromptHash(body.Messages)
 		if cached := s.convCache.Lookup(convCacheScope, acc.ID, convCacheModel); cached != nil && cached.SystemPrompt == sysHash {
@@ -1908,7 +1992,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		// Only fall through to text streaming when the router explicitly selects
 		// no tool; this prevents a natural-language preamble from becoming a
 		// completed assistant turn with the actual call lost.
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
+		allowRoutedFinal := len(activeLedger.Completed) > 0 && len(activeLedger.Pending) == 0 && responseFormat == nil && !strings.EqualFold(normalizedToolChoiceMode(body.ToolChoice), "required")
+		routerContextSource := answerPrompt + "\n" + activeLedger.RouterContext()
+		routerContext, routerContextTruncated := boundedToolRouterPromptContext(routerContextSource)
+		log.Printf("[req-trace] id=%s stage=router_context source_len=%d bounded_len=%d truncated=%t", requestID, len(routerContextSource), len(routerContext), routerContextTruncated)
+		routePrompt := modelToolRouterPromptForTurn(routerContext, toolMaps, body.ToolChoice, allowRoutedFinal)
 		log.Printf("[req-trace] id=%s stage=router_start prompt_len=%d", requestID, len(routePrompt))
 		routeRes, routeErr := s.chatWithAccount(withToolPlanning(ctx), acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		log.Printf("[req-trace] id=%s stage=router_return elapsed_ms=%d err=%t", requestID, time.Since(startedAt).Milliseconds(), routeErr != nil)
@@ -1919,23 +2007,10 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			s.dropTransientConversation(routeRes.ConversationID)
 		}
 		if routeErr != nil {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
-			flusher, ok := w.(http.Flusher)
-			if !ok {
-				http.Error(w, "stream unsupported", http.StatusInternalServerError)
-				return
-			}
-			message := sanitizePublicInternalText(upstreamError(routeErr))
-			if IsRateLimited(routeErr) {
-				message = "upstream is rate limiting; try again shortly"
-			}
-			trace.fail(upstreamStatus(routeErr), usageErrorType(upstreamStatus(routeErr)), message)
-			writeOpenAIStreamError(r.Context(), w, flusher, message, streamErrorCode(routeErr))
+			writePreStreamUpstreamError(w, r, trace, routeErr)
 			return
 		}
-		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+		calls, routedAnswer, parsed := parseModelToolRouteDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
 		if !parsed {
@@ -1944,18 +2019,75 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				s.dropTransientConversation(repairRes.ConversationID)
 			}
 			if repairErr == nil {
-				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+				calls, routedAnswer, parsed = parseModelToolRouteDecision(repairRes.Text, toolMaps, body.ToolChoice)
 				calls = filterCompletedCalls(calls, activeLedger)
 				calls, _ = validateCalls("router", calls)
 			}
 		}
+		retryReason := ""
+		retryPrompt := ""
+		if shouldRetryFailedFileTool(body.Messages, toolMaps, body.ToolChoice, activeLedger, parsed, calls) {
+			retryReason = "failed_file_action"
+			retryPrompt = failedFileToolRetryPrompt(body.Messages, toolMaps, activeLedger)
+		} else if shouldRetryMissingActionTool(body.Messages, toolMaps, body.ToolChoice, parsed, calls, routedAnswer) {
+			retryReason = "missing_action"
+			retryPrompt = missingActionToolRetryPrompt(body.Messages, toolMaps)
+		}
+		if retryPrompt != "" {
+			log.Printf("[req-trace] id=%s stage=router_action_retry_start reason=%s prompt_len=%d", requestID, retryReason, len(retryPrompt))
+			retryRes, retryErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: retryPrompt, Tone: tone, Attachments: body.Attachments})
+			if retryErr == nil && retryRes.ConversationID != "" {
+				s.dropTransientConversation(retryRes.ConversationID)
+			}
+			if retryErr == nil {
+				retryCalls, _, retryParsed := parseModelToolRouteDecision(retryRes.Text, toolMaps, body.ToolChoice)
+				retryCalls = filterCompletedCalls(retryCalls, activeLedger)
+				retryCalls, _ = validateCalls("router_action_retry", retryCalls)
+				log.Printf("[req-trace] id=%s stage=router_action_retry_return reason=%s parsed=%t calls=%d", requestID, retryReason, retryParsed, len(retryCalls))
+				if retryParsed && len(retryCalls) > 0 {
+					calls = retryCalls
+					routedAnswer = ""
+					parsed = true
+					routeRes = retryRes
+				}
+			}
+			if len(calls) == 0 {
+				message := "model did not select a caller tool for the requested local operation"
+				if retryReason == "failed_file_action" {
+					message = "model did not select a different caller file tool after the previous file operation failed"
+				}
+				writeOpenAIError(w, http.StatusBadGateway, "tool_selection_failed", message)
+				return
+			}
+		}
+		log.Printf("[req-trace] id=%s stage=router_decision parsed=%t calls=%d final=%t", requestID, parsed, len(calls), routedAnswer != "")
 		if parsed && len(calls) > 0 {
 			scope := fmt.Sprintf("%d:%v:stream", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeVisibleToolResponse(r, w, streamDelivery, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), calls, routeRes)
+			return
+		}
+		if parsed && allowRoutedFinal && routedAnswer != "" {
+			if shouldEnforceCompletionEvidence(toolMaps, activeLedger) && !completionEvidenceAllows(routedAnswer, activeLedger) {
+				routedAnswer = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
+			}
+			if isContentPolicyBlock(routedAnswer) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				flusher, ok := w.(http.Flusher)
+				if !ok {
+					http.Error(w, "stream unsupported", http.StatusInternalServerError)
+					return
+				}
+				writeOpenAIStreamError(r.Context(), w, flusher, "M365 content policy blocked this request; try again or switch account", "upstream_content_blocked")
+				return
+			}
+			s.accountPool.MarkSuccess(acc.ID)
+			s.writeRoutedFinalAnswer(w, r, body, prompt, routedAnswer, routeRes, acc, startedAt)
 			return
 		}
 	}
@@ -1975,10 +2107,13 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		var text strings.Builder
 		var delivered strings.Builder
+		var deliveredReasoning strings.Builder
 		var pending strings.Builder
 		var streamedTools []detectedToolCall
+		stopFilter := newStopSequenceStreamFilter(body.Stop)
 		identityFilter := newPublicIdentityStreamFilter(model)
 		reasoningFilter := newPublicReasoningStreamFilter()
+		outputLimiter := newOutputTokenLimiter(model, body.outputTokenLimit())
 		emitter := newOpenAIStreamEmitter(r, w, flusher, id, model, trace, streamDelivery)
 		if err := emitter.writeRaw(": connected\n\n"); err != nil {
 			return
@@ -1989,6 +2124,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		hadToolEvent := false
 		invalidToolEvent := false
 		writeText := func(part string) error {
+			part = outputLimiter.Apply(part)
 			if part == "" {
 				return nil
 			}
@@ -1996,6 +2132,17 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			delivered.WriteString(part)
+			return nil
+		}
+		writeReasoning := func(part string) error {
+			part = outputLimiter.Apply(part)
+			if part == "" {
+				return nil
+			}
+			if err := emitter.writeDelta(map[string]any{"reasoning_content": part}); err != nil {
+				return err
+			}
+			deliveredReasoning.WriteString(part)
 			return nil
 		}
 		emitText := func(part string) error {
@@ -2009,29 +2156,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			if part = reasoningFilter.Push(part); part == "" {
 				return nil
 			}
-			return emitter.writeDelta(map[string]any{"reasoning_content": part})
+			return writeReasoning(part)
 		}
-		handleEvent := func(ev chathub.StreamEvent) error {
-			switch ev.Kind {
-			case "tool":
-				hadToolEvent = true
-				if ev.ToolName != "" && len(ev.Arguments) > 0 {
-					streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
-				} else {
-					invalidToolEvent = true
-				}
-				return nil
-			case "reasoning":
-				return emitReasoning(ev.Text)
-			case "text":
-				if ev.Text == "" {
-					return nil
-				}
-			default:
+		processText := func(part string) error {
+			if part == "" {
 				return nil
 			}
-			text.WriteString(ev.Text)
-			pending.WriteString(ev.Text)
+			text.WriteString(part)
+			pending.WriteString(part)
 			v := pending.String()
 			if requiredTool {
 				return nil
@@ -2067,12 +2199,34 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			return nil
 		}
+		handleEvent := func(ev chathub.StreamEvent) error {
+			switch ev.Kind {
+			case "tool":
+				hadToolEvent = true
+				if ev.ToolName != "" && len(ev.Arguments) > 0 {
+					streamedTools = append(streamedTools, detectedToolCall{ID: "call_" + uuid.NewString(), Name: ev.ToolName, Arguments: ev.Arguments})
+				} else {
+					invalidToolEvent = true
+				}
+				return nil
+			case "reasoning":
+				return emitReasoning(ev.Text)
+			case "text":
+				if ev.Text == "" {
+					return nil
+				}
+			default:
+				return nil
+			}
+			return processText(stopFilter.Push(ev.Text))
+		}
 		resetAttempt := func() {
 			text.Reset()
 			pending.Reset()
 			streamedTools = nil
 			hadToolEvent = false
 			invalidToolEvent = false
+			stopFilter = newStopSequenceStreamFilter(body.Stop)
 			identityFilter = newPublicIdentityStreamFilter(model)
 			reasoningFilter = newPublicReasoningStreamFilter()
 			emitter.resetFirst()
@@ -2105,7 +2259,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if err != nil && chathub.IsStreamInterrupted(err) && delivered.Len() > 0 && !requiredTool && !hadToolEvent {
+		if err != nil && chathub.IsStreamInterrupted(err) && delivered.Len() > 0 && !requiredTool && !hadToolEvent && !stopFilter.Stopped() {
 			resumeAttempts := s.settings.get().StreamResumeAttempts
 			partialResult := res
 			for attempt := 1; attempt <= resumeAttempts && r.Context().Err() == nil; attempt++ {
@@ -2123,6 +2277,8 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				identityFilter = newPublicIdentityStreamFilter(model)
 				reasoningFilter = newPublicReasoningStreamFilter()
 				pending.Reset()
+				continuation = stopFilter.Push(continuation)
+				continuation += stopFilter.Flush()
 				if writeErr := emitText(continuation); writeErr != nil {
 					log.Printf("[req-trace] id=%s stage=stream_resume_write attempt=%d err=%v", requestID, attempt, writeErr)
 					return
@@ -2139,6 +2295,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				resumeRes.Incomplete = false
 				resumeRes.FailureStage = ""
 				resumeRes.UpstreamCloseCode = 0
+				resumeRes = detachStreamResumeConversation(resumeRes, s.dropTransientConversation)
 				res = resumeRes
 				err = nil
 				trace.markStreamRecovered(resumeRes.RequestID, resumeRes.LastDeltaMs)
@@ -2176,8 +2333,14 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		s.accountPool.MarkSuccess(acc.ID)
 		if text.Len() == 0 && strings.TrimSpace(res.Text) != "" {
-			text.WriteString(res.Text)
-			pending.WriteString(res.Text)
+			if writeErr := processText(stopFilter.Push(res.Text)); writeErr != nil {
+				return
+			}
+		}
+		if tail := stopFilter.Flush(); tail != "" {
+			if writeErr := processText(tail); writeErr != nil {
+				return
+			}
 		}
 		rawCalls := drainMCPToolCalls(mcpCallQueue)
 		if len(rawCalls) == 0 {
@@ -2260,7 +2423,7 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 				}
 				return n
 			}())
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			stopKeepalive()
 			_ = writeVisibleToolResponse(r, w, streamDelivery, id, model, calls, toolResult)
 			if userLookupKey != "" && res.ConversationID != "" {
@@ -2281,12 +2444,20 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if reasoning := reasoningFilter.Flush(); reasoning != "" {
-			if err := emitter.writeDelta(map[string]any{"reasoning_content": reasoning}); err != nil {
+			if err := writeReasoning(reasoning); err != nil {
 				log.Printf("[req-trace] id=%s stage=stream_write err=%v", requestID, err)
 				return
 			}
 		}
-		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}}
+		finishReason := "stop"
+		if outputLimiter.Truncated() {
+			finishReason = "length"
+			res.Text = delivered.String()
+			res.Reasoning = deliveredReasoning.String()
+		} else if stopFilter.Stopped() {
+			res.Text = delivered.String()
+		}
+		finishChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}}
 		stopKeepalive()
 		_ = emitter.writeRaw("data: " + mustJSON(finishChunk) + "\n\n")
 		_ = emitter.writeRaw("data: [DONE]\n\n")
@@ -2300,7 +2471,11 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 	// Ask the upstream model to select and validate the next tool. The gateway
 	// remains tool-agnostic; it only validates and serializes the decision.
 	if planningMode == "router" && len(toolMaps) > 0 && fmt.Sprint(body.ToolChoice) != "none" {
-		routePrompt := modelToolRouterPrompt(answerPrompt+"\n"+activeLedger.RouterContext(), toolMaps, body.ToolChoice)
+		allowRoutedFinal := len(activeLedger.Completed) > 0 && len(activeLedger.Pending) == 0 && responseFormat == nil && !strings.EqualFold(normalizedToolChoiceMode(body.ToolChoice), "required")
+		routerContextSource := answerPrompt + "\n" + activeLedger.RouterContext()
+		routerContext, routerContextTruncated := boundedToolRouterPromptContext(routerContextSource)
+		log.Printf("[req-trace] id=%s stage=router_context source_len=%d bounded_len=%d truncated=%t", requestID, len(routerContextSource), len(routerContext), routerContextTruncated)
+		routePrompt := modelToolRouterPromptForTurn(routerContext, toolMaps, body.ToolChoice, allowRoutedFinal)
 		routeRes, routeErr := s.chatWithAccount(withToolPlanning(ctx), acc.ID, account, chathub.Request{Text: routePrompt, Tone: tone, Attachments: body.Attachments})
 		if routeErr != nil {
 			s.accountPool.MarkFailure(acc.ID, routeErr, rateLimitCooldown)
@@ -2328,12 +2503,18 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 			}
 			s.accountPool.MarkSuccess(acc.ID)
 		}
-		calls, parsed := parseModelToolDecision(routeRes.Text, toolMaps, body.ToolChoice)
+		if routeRes.ConversationID != "" {
+			s.dropTransientConversation(routeRes.ConversationID)
+		}
+		calls, routedAnswer, parsed := parseModelToolRouteDecision(routeRes.Text, toolMaps, body.ToolChoice)
 		if !parsed {
 			repairRes, repairErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: `Repair this tool routing output into JSON only with shape {"calls":[{"name":"function_name","arguments":{}}]}. Do not invent calls; use {"calls":[]} if unrecoverable. OUTPUT:
 ` + compactToolResult(routeRes.Text, 6000), Tone: tone, Attachments: body.Attachments})
 			if repairErr == nil {
 				calls, parsed = parseModelToolDecision(repairRes.Text, toolMaps, body.ToolChoice)
+				if repairRes.ConversationID != "" {
+					s.dropTransientConversation(repairRes.ConversationID)
+				}
 			}
 			if !parsed {
 				http.Error(w, "model returned an invalid tool routing decision", http.StatusBadGateway)
@@ -2342,13 +2523,62 @@ func (s *Server) openaiChat(w http.ResponseWriter, r *http.Request) {
 		}
 		calls = filterCompletedCalls(calls, activeLedger)
 		calls, _ = validateCalls("router", calls)
+		retryReason := ""
+		retryPrompt := ""
+		if shouldRetryFailedFileTool(body.Messages, toolMaps, body.ToolChoice, activeLedger, parsed, calls) {
+			retryReason = "failed_file_action"
+			retryPrompt = failedFileToolRetryPrompt(body.Messages, toolMaps, activeLedger)
+		} else if shouldRetryMissingActionTool(body.Messages, toolMaps, body.ToolChoice, parsed, calls, routedAnswer) {
+			retryReason = "missing_action"
+			retryPrompt = missingActionToolRetryPrompt(body.Messages, toolMaps)
+		}
+		if retryPrompt != "" {
+			log.Printf("[req-trace] id=%s stage=router_action_retry_start reason=%s prompt_len=%d", requestID, retryReason, len(retryPrompt))
+			retryRes, retryErr := s.chatWithAccount(withRetryAttempt(withToolPlanning(ctx)), acc.ID, account, chathub.Request{Text: retryPrompt, Tone: tone, Attachments: body.Attachments})
+			if retryErr == nil && retryRes.ConversationID != "" {
+				s.dropTransientConversation(retryRes.ConversationID)
+			}
+			if retryErr == nil {
+				retryCalls, _, retryParsed := parseModelToolRouteDecision(retryRes.Text, toolMaps, body.ToolChoice)
+				retryCalls = filterCompletedCalls(retryCalls, activeLedger)
+				retryCalls, _ = validateCalls("router_action_retry", retryCalls)
+				log.Printf("[req-trace] id=%s stage=router_action_retry_return reason=%s parsed=%t calls=%d", requestID, retryReason, retryParsed, len(retryCalls))
+				if retryParsed && len(retryCalls) > 0 {
+					calls = retryCalls
+					routedAnswer = ""
+					parsed = true
+					routeRes = retryRes
+				}
+			}
+			if len(calls) == 0 {
+				message := "model did not select a caller tool for the requested local operation"
+				if retryReason == "failed_file_action" {
+					message = "model did not select a different caller file tool after the previous file operation failed"
+				}
+				writeOpenAIError(w, http.StatusBadGateway, "tool_selection_failed", message)
+				return
+			}
+		}
+		log.Printf("[req-trace] id=%s stage=router_decision parsed=%t calls=%d final=%t", requestID, parsed, len(calls), routedAnswer != "")
 		if len(calls) > 0 {
 			scope := fmt.Sprintf("%d:%v", len(body.Messages), completedCallIDs(activeLedger))
 			for i := range calls {
 				calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 			}
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, routeRes)
+			return
+		}
+		if parsed && allowRoutedFinal && routedAnswer != "" {
+			if shouldEnforceCompletionEvidence(toolMaps, activeLedger) && !completionEvidenceAllows(routedAnswer, activeLedger) {
+				routedAnswer = "I cannot confirm completion because no matching tool results were returned. No external action has been verified."
+			}
+			if isContentPolicyBlock(routedAnswer) {
+				writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_content_blocked", "M365 content policy blocked this request; try again or switch account")
+				return
+			}
+			s.accountPool.MarkSuccess(acc.ID)
+			s.writeRoutedFinalAnswer(w, r, body, prompt, routedAnswer, routeRes, acc, startedAt)
 			return
 		}
 		if fmt.Sprint(body.ToolChoice) == "required" {
@@ -2366,7 +2596,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					for i := range calls {
 						calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 					}
-					calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+					calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 					_ = writeToolResponseTracked(r, w, "chatcmpl-"+uuid.NewString(), firstNonEmpty(body.Model, "m365-copilot"), body.Stream, calls, retryRes)
 					return
 				}
@@ -2398,16 +2628,45 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		defer stopKeepalive()
 		writeChunk := emitter.writeDelta
 		contentFilter := newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
+		stopFilter := newStopSequenceStreamFilter(body.Stop)
 		reasoningFilter := newPublicReasoningStreamFilter()
+		outputLimiter := newOutputTokenLimiter(model, body.outputTokenLimit())
+		var deliveredContent strings.Builder
+		var deliveredReasoning strings.Builder
+		writeContent := func(content string) error {
+			content = outputLimiter.Apply(content)
+			if content == "" {
+				return nil
+			}
+			if err := writeChunk(map[string]any{"content": content}); err != nil {
+				return err
+			}
+			deliveredContent.WriteString(content)
+			return nil
+		}
+		writeReasoning := func(reasoning string) error {
+			reasoning = outputLimiter.Apply(reasoning)
+			if reasoning == "" {
+				return nil
+			}
+			if err := writeChunk(map[string]any{"reasoning_content": reasoning}); err != nil {
+				return err
+			}
+			deliveredReasoning.WriteString(reasoning)
+			return nil
+		}
 		onDelta := func(content string) error {
-			if content = contentFilter.Push(content); content != "" {
-				return writeChunk(map[string]any{"content": content})
+			if stopFilter.Stopped() {
+				return nil
+			}
+			if content = stopFilter.Push(content); content != "" {
+				return writeContent(contentFilter.Push(content))
 			}
 			return nil
 		}
 		onReasoning := func(reasoning string) error {
 			if reasoning = reasoningFilter.Push(reasoning); reasoning != "" {
-				return writeChunk(map[string]any{"reasoning_content": reasoning})
+				return writeReasoning(reasoning)
 			}
 			return nil
 		}
@@ -2424,7 +2683,11 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 					failoverReq.SessionID = ""
 				}
 				contentFilter = newPublicIdentityStreamFilter(firstNonEmpty(body.Model, defaultPublicModelName))
+				stopFilter = newStopSequenceStreamFilter(body.Stop)
 				reasoningFilter = newPublicReasoningStreamFilter()
+				outputLimiter = newOutputTokenLimiter(model, body.outputTokenLimit())
+				deliveredContent.Reset()
+				deliveredReasoning.Reset()
 				emitter.resetFirst()
 				ctx2, cancel2 := context.WithTimeout(r.Context(), time.Duration(s.settings.get().ChatTimeoutSeconds)*time.Second)
 				defer cancel2()
@@ -2439,18 +2702,27 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 			}
 		}
 		if err == nil {
+			if content := stopFilter.Flush(); content != "" {
+				if writeErr := writeContent(contentFilter.Push(content)); writeErr != nil {
+					return
+				}
+			}
 			if content := contentFilter.Flush(); content != "" {
-				if writeErr := writeChunk(map[string]any{"content": content}); writeErr != nil {
+				if writeErr := writeContent(content); writeErr != nil {
 					return
 				}
 			}
 			if reasoning := reasoningFilter.Flush(); reasoning != "" {
-				if writeErr := writeChunk(map[string]any{"reasoning_content": reasoning}); writeErr != nil {
+				if writeErr := writeReasoning(reasoning); writeErr != nil {
 					return
 				}
 			}
 			res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 			res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+			if outputLimiter.Truncated() || stopFilter.Stopped() {
+				res.Text = deliveredContent.String()
+				res.Reasoning = deliveredReasoning.String()
+			}
 			s.accountPool.MarkSuccess(acc.ID)
 		} else {
 			log.Printf("[req-trace] id=%s stage=stream_error err=%v", requestID, err)
@@ -2470,13 +2742,20 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		}
 		pt := estimatedChatPromptTokens(prompt, &body)
 		ct := EstimateTokens(res.Text)
+		if body.outputTokenLimit() > 0 {
+			ct = int64(outputLimiter.Tokens())
+		}
 		log.Printf("[usage] stream id=%s pt=%d ct=%d res.Text=%d", id, pt, ct, len(res.Text))
-		if ct == 0 {
+		if ct == 0 && !stopFilter.Stopped() {
 			stopKeepalive()
 			writeOpenAIStreamError(r.Context(), w, flusher, "upstream returned empty completion; the requested model may be unavailable for this tenant", "upstream_error")
 			return
 		}
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		finishReason := "stop"
+		if outputLimiter.Truncated() {
+			finishReason = "length"
+		}
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
 		stopKeepalive()
 		_ = emitter.writeRaw("data: " + mustJSON(usageChunk) + "\n\n")
 		_ = emitter.writeRaw("data: [DONE]\n\n")
@@ -2545,7 +2824,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		s.bindConversation(acc, &body, r, res, prompt, answerPrompt, contextReused, startedAt)
 		s.storeConvCache(convCacheScope, acc.ID, convCacheModel, res, tone, body.Messages, convReused)
 	}
-	if res.ConversationID != "" {
+	if !transientRequest && res.ConversationID != "" {
 		resolved := s.sessionResolver.Resolve(r, &body)
 		if !resolved.IsNew {
 			w.Header().Set(sessionHeaderName, resolved.SessionID)
@@ -2578,7 +2857,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = rejected > 0
 		if len(calls) > 0 {
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
@@ -2588,7 +2867,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = rejected > 0
 		if len(calls) > 0 {
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
@@ -2598,7 +2877,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		calls = filterCompletedCalls(calls, activeLedger)
 		invalidDetectedTool = invalidDetectedTool || rejected > 0
 		if len(calls) > 0 {
-			calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+			calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 			_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, res)
 			return
 		}
@@ -2623,7 +2902,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 				for i := range calls {
 					calls[i].ID = scopedCallID(calls[i].Name, string(calls[i].Arguments), i, scope)
 				}
-				calls = limitToolCalls(calls, adaptiveToolCallLimit(calls, configuredToolCallLimit(s.settings)))
+				calls = limitRequestToolCalls(&body, calls, configuredToolCallLimit(s.settings))
 				_ = writeToolResponseTracked(r, w, id, model, body.Stream, calls, routeRes)
 				return
 			}
@@ -2639,6 +2918,17 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	}
 	res.Text = sanitizePublicAssistantTextForModel(res.Text, body.Model)
 	res.Reasoning = sanitizePublicReasoningText(res.Reasoning)
+	res.Text, _ = truncateTextAtStop(res.Text, body.Stop)
+	if responseFormat != nil && (responseFormat.Type == "json_object" || responseFormat.Type == "json_schema") {
+		res.Text = normalizeJSONText(res.Text)
+	}
+	limitedReasoning, limitedText, outputTruncated, limitedTokenCount := limitAssistantText(model, res.Reasoning, res.Text, body.outputTokenLimit())
+	res.Reasoning = limitedReasoning
+	res.Text = limitedText
+	finishReason := "stop"
+	if outputTruncated {
+		finishReason = "length"
+	}
 	log.Printf("[debug] res.Text bytes=%d content=%q", len(res.Text), res.Text)
 	created := time.Now().Unix()
 
@@ -2666,15 +2956,15 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		_ = sseRaw(r.Context(), w, flusher, "data: "+string(b)+"\n\n")
 		pt := estimatedChatPromptTokens(prompt, &body)
 		ct := EstimateTokens(res.Text)
-		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+		if body.outputTokenLimit() > 0 {
+			ct = int64(limitedTokenCount)
+		}
+		usageChunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": map[string]any{"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
 		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(usageChunk)+"\n\n")
 		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 		return
 	}
 
-	if responseFormat != nil && (responseFormat.Type == "json_object" || responseFormat.Type == "json_schema") {
-		res.Text = normalizeJSONText(res.Text)
-	}
 	content := any(res.Text)
 	if len(res.Images) > 0 {
 		parts := []any{map[string]any{"type": "text", "text": res.Text}}
@@ -2695,6 +2985,9 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	// OpenAI 要求的 usage 字段。
 	pt := estimatedChatPromptTokens(prompt, &body)
 	ct := EstimateTokens(res.Text)
+	if body.outputTokenLimit() > 0 {
+		ct = int64(limitedTokenCount)
+	}
 	jsonOut(w, map[string]any{
 		"id":      id,
 		"object":  "chat.completion",
@@ -2703,7 +2996,7 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 		"choices": []map[string]any{{
 			"index":         0,
 			"message":       assistant,
-			"finish_reason": "stop",
+			"finish_reason": finishReason,
 		}},
 		"m365": compatM365Metadata(res),
 		"usage": map[string]any{
@@ -2714,8 +3007,82 @@ APPLICATION_REQUEST_AND_EVIDENCE:
 	})
 }
 
+func (s *Server) writeRoutedFinalAnswer(w http.ResponseWriter, r *http.Request, body oaiReq, prompt, answer string, res chathub.Result, acc auth.AccountToken, startedAt time.Time) {
+	answer = sanitizePublicAssistantTextForModel(answer, body.Model)
+	answer, _ = truncateTextAtStop(answer, body.Stop)
+	model := firstNonEmpty(body.Model, "m365-copilot")
+	_, answer, truncated, _ := limitAssistantText(model, "", answer, body.outputTokenLimit())
+	finishReason := "stop"
+	if truncated {
+		finishReason = "length"
+	}
+	id := "chatcmpl-" + uuid.NewString()
+	created := time.Now().Unix()
+	inputTokens := EstimateTokens(prompt)
+	toolTokens := int64(estimateToolTokens(body.Model, body.Tools, body.ToolChoice))
+	outputTokens := EstimateTokens(answer)
+	promptTokens := inputTokens + toolTokens
+	usage := map[string]any{"prompt_tokens": promptTokens, "completion_tokens": outputTokens, "total_tokens": promptTokens + outputTokens}
+	recordUsage := func() {
+		s.recordUsage(r, acc, UsageRecord{
+			Time:         time.Now(),
+			Model:        model,
+			Endpoint:     "/v1/chat/completions",
+			Stream:       body.Stream,
+			InputTokens:  inputTokens,
+			ToolTokens:   toolTokens,
+			OutputTokens: outputTokens,
+			DurationMs:   time.Since(startedAt).Milliseconds(),
+			Status:       http.StatusOK,
+		})
+	}
+	if body.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "stream unsupported", http.StatusInternalServerError)
+			return
+		}
+		delivery := &streamDeliveryState{}
+		emitter := newOpenAIStreamEmitter(r, w, flusher, id, model, usageTraceFrom(r.Context()), delivery)
+		if err := emitter.writeDelta(map[string]any{"content": answer}); err != nil {
+			return
+		}
+		finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "m365": compatM365Metadata(res), "usage": usage}
+		_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finish)+"\n\n")
+		_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
+		recordUsage()
+		return
+	}
+	if trace := usageTraceFrom(r.Context()); trace != nil {
+		trace.markFirstToken()
+	}
+	recordUsage()
+	jsonOut(w, map[string]any{
+		"id":      id,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   model,
+		"choices": []map[string]any{{
+			"index":         0,
+			"message":       map[string]any{"role": "assistant", "content": answer},
+			"finish_reason": finishReason,
+		}},
+		"m365":  compatM365Metadata(res),
+		"usage": usage,
+	})
+}
+
 func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.Request, body *oaiReq, prompt, answer string, startedAt time.Time) {
 	model := firstNonEmpty(body.Model, defaultPublicModelName)
+	answer, _ = truncateTextAtStop(answer, body.Stop)
+	_, answer, truncated, _ := limitAssistantText(model, "", answer, body.outputTokenLimit())
+	finishReason := "stop"
+	if truncated {
+		finishReason = "length"
+	}
 	id := "chatcmpl-" + uuid.NewString()
 	created := time.Now().Unix()
 	inputTokens := EstimateTokens(prompt)
@@ -2745,7 +3112,7 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 			"choices": []map[string]any{{
 				"index":         0,
 				"message":       map[string]any{"role": "assistant", "content": answer},
-				"finish_reason": "stop",
+				"finish_reason": finishReason,
 			}},
 			"usage": usage,
 		})
@@ -2769,7 +3136,7 @@ func (s *Server) writePublicIdentityChatResponse(w http.ResponseWriter, r *http.
 	if err := emitter.writeDelta(map[string]any{"content": answer}); err != nil {
 		return
 	}
-	finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": usage}
+	finish := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": model, "choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": finishReason}}, "usage": usage}
 	_ = sseRaw(r.Context(), w, flusher, "data: "+mustJSON(finish)+"\n\n")
 	_ = sseRaw(r.Context(), w, flusher, "data: [DONE]\n\n")
 	recordUsage()

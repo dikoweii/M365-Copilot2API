@@ -59,6 +59,23 @@ running process. A failed start, health check, or hash check automatically
 switches back to the previous release. State is not automatically restored,
 because refreshed OAuth tokens can have one-time exchange behavior.
 
+## Legacy single-binary hosts
+
+Hosts whose systemd unit still starts
+`/opt/m365-copilot2api/m365-copilot2api` must use
+`deploy/remote-legacy-release.sh` until the unit is migrated to the immutable
+`current` symlink layout. Build and test the binary locally, upload it to a
+root-only temporary path, then invoke the helper with the externally supplied
+release ID, checksum, service name, install root, state directory, and retention
+count.
+
+The legacy helper takes the same deployment lock, snapshots the persistent
+state, atomically replaces the single binary, checks `/login`, verifies the
+running process checksum, and restores the previous binary on failure. It does
+not restore the state snapshot automatically because OAuth refresh tokens can
+have one-time exchange behavior. Do not store host names, IP addresses, SSH
+keys, or credentials in the repository or command examples.
+
 ## Verification
 
 After a successful release:

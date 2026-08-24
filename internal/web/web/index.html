@@ -713,8 +713,15 @@ if (response.output_text) {
       <button class="modal-close" onclick="closeUseKey()"><i data-lucide="x" style="width:15px;height:15px"></i></button>
     </div>
     <div class="copy-field">
-      <input class="form-input" id="useKeyVal" readonly onclick="this.select()">
-      <button class="btn btn-sm" onclick="copyUseKey()">Copy</button>
+      <input class="form-input" id="useKeyVal" readonly>
+      <button class="btn btn-sm" id="copyUseKeyBtn" onclick="copyUseKey()" disabled>Copy unavailable</button>
+    </div>
+    <div class="highlight-box warning">
+      <b>完整密钥不可恢复</b>
+      <p>系统只保存哈希值。需要新的可复制密钥时，请轮换此密钥；旧密钥会立即失效。</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn primary" onclick="rotateKey(useKeyId)">Rotate key</button>
     </div>
     <div class="uke-tabs" id="useKeyClients"></div>
     <div class="uke-tabs" id="useKeyOs"></div>
@@ -1221,6 +1228,7 @@ async function loadKeys(){
     const k=d.keys||[];
     $('keyRows').innerHTML=k.length?k.map(x=>`<tr><td><b>${x.name}</b></td><td><code>${x.prefix}</code></td><td style="font-size:12px;color:var(--muted)">${new Date(x.createdAt).toLocaleString()}</td><td>${x.revoked?'<span class="status offline"><i></i>Disabled</span>':'<span class="status online"><i></i>Active</span>'}</td><td style="font-size:12px;color:var(--muted)">${x.lastUsedAt?new Date(x.lastUsedAt).toLocaleString():'-'}</td><td style="text-align:right;white-space:nowrap">
       <button class="btn-sm btn" onclick="openUseKey('${x.id}')">Use key</button>
+      <button class="btn-sm btn" onclick="rotateKey('${x.id}')">Rotate</button>
       <button class="btn-sm btn" onclick="editKey('${x.id}','${x.name.replace(/'/g,"\\'")}')">Edit</button>
       <button class="btn-sm btn ${x.revoked?'success':'danger'}" onclick="toggleKey('${x.id}',${x.revoked})">${x.revoked?'Enable':'Disable'}</button>
       <button class="btn-sm btn danger" onclick="revokeKey('${x.id}')">Delete</button>
@@ -1242,7 +1250,13 @@ async function toggleKey(id,revoked){
   catch(e){showNotice(e.message,'error');}
 }
 
-function openKeyModal(){$('keyModal').classList.add('open');$('keyResult').style.display='none';$('keyName').value='default';setTimeout(()=>$('keyName').focus(),50);}
+function openKeyModal(){
+  $('keyModal').classList.add('open');
+  $('keyModal').querySelector('form').style.display='block';
+  $('keyResult').style.display='none';
+  $('keyName').value='default';
+  setTimeout(()=>$('keyName').focus(),50);
+}
 function closeKeyModal(){$('keyModal').classList.remove('open');}
 async function copyKey(){try{await navigator.clipboard.writeText($('keyValue').value);showNotice('已复制','success');}catch(e){}}
 async function createKey(e){
@@ -1250,6 +1264,20 @@ async function createKey(e){
   try{
     const d=await api('/api/admin/keys',{method:'POST',body:JSON.stringify({name:$('keyName').value||'default'})});
     $('keyValue').value=d.key;$('keyResult').style.display='block';copyKey();loadKeys();
+  }catch(e){showNotice(e.message,'error');}
+}
+async function rotateKey(id){
+  if(!confirm('轮换后旧密钥会立即失效，确定继续吗？'))return;
+  try{
+    const d=await api('/api/admin/keys/rotate',{method:'POST',body:JSON.stringify({id})});
+    $('keyModal').classList.add('open');
+    $('keyModal').querySelector('form').style.display='none';
+    $('keyName').value=d.record?.name||'API key';
+    $('keyValue').value=d.key||'';
+    $('keyResult').style.display='block';
+    closeUseKey();
+    showNotice('已轮换密钥，请立即复制保存','success');
+    loadKeys();
   }catch(e){showNotice(e.message,'error');}
 }
 async function revokeKey(id){if(!confirm('确定删除此密钥？'))return;try{await api('/api/admin/keys?id='+id,{method:'DELETE'});loadKeys();}catch(e){showNotice(e.message,'error');}}
@@ -1455,8 +1483,9 @@ async function openUseKey(id){
   const d=await api('/api/admin/keys');
   const rec=(d.keys||[]).find(x=>x.id===id);
   if(!rec){showNotice('找不到密钥','error');return;}
+  useKeyPrefix=rec.prefix||'';
   $('useKeyName').textContent='当前密钥：'+rec.name+' ('+rec.prefix+')';
-  $('useKeyVal').value=rec.raw||'';
+  $('useKeyVal').value=(rec.prefix||'sk-')+'••••••••';
   $('useKeyModal').classList.add('open');
   renderUkeTabs();
   renderUkeFiles();
@@ -1476,7 +1505,7 @@ function ukeFile(path,content){
 }
 function renderUkeFiles(){
   const base=location.origin;
-  const key=$('useKeyVal').value||useKeyPrefix;
+  const key='YOUR_M365_API_KEY';
   let html='';
   if(ukeClient==='curl'){
     html=ukeFile('Terminal',`curl ${base}/v1/chat/completions \\
@@ -1539,9 +1568,7 @@ goals = true`;
   $('useKeyFiles').innerHTML=html;
 }
 async function copyUseKey(){
-  const v=$('useKeyVal').value;
-  if(!v){showNotice('完整密钥不可用','error');return;}
-  try{await navigator.clipboard.writeText(v);showNotice('已复制','success');}catch(e){}
+  showNotice('完整密钥只在创建或轮换时显示，请先轮换密钥','error');
 }
 
 async function loadConversations(){
